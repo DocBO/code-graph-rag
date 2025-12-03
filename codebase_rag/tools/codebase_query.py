@@ -85,19 +85,34 @@ def create_query_tool(
             summary = f"Successfully retrieved {len(results)} item(s) from the graph."
             return GraphData(query_used=cypher_query, results=results, summary=summary)
         except LLMGenerationError as e:
+            error_msg = str(e)
+            logger.warning(f"Failed to generate Cypher query: {error_msg}")
             return GraphData(
                 query_used="N/A",
                 results=[],
-                summary=f"I couldn't translate your request into a database query. Error: {e}",
+                summary=f"I couldn't translate your request into a database query. {error_msg}",
             )
         except Exception as e:
+            error_str = str(e).lower()
+            # Provide helpful error messages for common Cypher syntax issues
+            if "unexpected" in error_str and ("eof" in error_str or ";" in error_str):
+                helpful_msg = (
+                    "The generated Cypher query had a syntax error (likely trailing semicolon). "
+                    "This sometimes happens when the LLM includes SQL-style punctuation. "
+                    "Please try rephrasing your question or report this issue."
+                )
+            elif "match" in error_str.lower() or "where" in error_str.lower():
+                helpful_msg = "The generated query has invalid Cypher syntax. Please try a different phrasing."
+            else:
+                helpful_msg = f"Database error: {e}"
+            
             logger.error(
                 f"[Tool:QueryGraph] Error during query execution: {e}", exc_info=True
             )
             return GraphData(
                 query_used=cypher_query,
                 results=[],
-                summary=f"There was an error querying the database: {e}",
+                summary=f"There was an error querying the database: {helpful_msg}",
             )
 
     return Tool(

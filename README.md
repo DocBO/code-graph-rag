@@ -195,6 +195,22 @@ CYPHER_ENDPOINT=http://localhost:11434/v1
 
 Get your Google API key from [Google AI Studio](https://aistudio.google.com/app/apikey).
 
+#### Option 5: All OpenRouter
+```bash
+# .env file
+ORCHESTRATOR_PROVIDER=openrouter
+ORCHESTRATOR_MODEL=meta-llama/llama-3.2-1b-instruct
+ORCHESTRATOR_API_KEY=sk-your-openrouter-key
+# Optional override; defaults to https://openrouter.ai/api/v1
+ORCHESTRATOR_ENDPOINT=https://openrouter.ai/api/v1
+
+CYPHER_PROVIDER=openrouter
+CYPHER_MODEL=qwen/qwen-2.5-7b
+CYPHER_API_KEY=sk-your-openrouter-key
+# Optional override; defaults to https://openrouter.ai/api/v1
+CYPHER_ENDPOINT=https://openrouter.ai/api/v1
+```
+
 **Install and run Ollama**:
 ```bash
 # Install Ollama (macOS/Linux)
@@ -232,19 +248,19 @@ Parse and ingest a multi-language repository into the knowledge graph:
 
 **For the first repository (clean start):**
 ```bash
-python -m codebase_rag.main start --repo-path /path/to/repo1 --update-graph --clean
+uv run python -m codebase_rag.main start --repo-path /path/to/repo1 --update-graph --clean
 ```
 
 **For additional repositories (preserve existing data):**
 ```bash
-python -m codebase_rag.main start --repo-path /path/to/repo2 --update-graph
-python -m codebase_rag.main start --repo-path /path/to/repo3 --update-graph
+uv run python -m codebase_rag.main start --repo-path /path/to/repo2 --update-graph
+uv run python -m codebase_rag.main start --repo-path /path/to/repo3 --update-graph
 ```
 
 **Control Memgraph batch flushing:**
 ```bash
 # Flush every 5,000 records instead of the default from settings
-python -m codebase_rag.main start --repo-path /path/to/repo --update-graph \
+uv run python -m codebase_rag.main start --repo-path /path/to/repo --update-graph \
   --batch-size 5000
 ```
 
@@ -255,7 +271,7 @@ The system automatically detects and processes files for all supported languages
 Start the interactive RAG CLI:
 
 ```bash
-python -m codebase_rag.main start --repo-path /path/to/your/repo
+uv run python -m codebase_rag.main start --repo-path /path/to/your/repo
 ```
 
 ### Step 2.5: Real-Time Graph Updates (Optional)
@@ -274,7 +290,7 @@ Run the realtime updater in a separate terminal:
 
 ```bash
 # Using Python directly
-python realtime_updater.py /path/to/your/repo
+uv run python realtime_updater.py /path/to/your/repo
 
 # Or using the Makefile
 make watch REPO_PATH=/path/to/your/repo
@@ -283,7 +299,7 @@ make watch REPO_PATH=/path/to/your/repo
 **With custom Memgraph settings:**
 ```bash
 # Python
-python realtime_updater.py /path/to/your/repo --host localhost --port 7687 --batch-size 1000
+uv run python realtime_updater.py /path/to/your/repo --host localhost --port 7687 --batch-size 1000
 
 # Makefile
 make watch REPO_PATH=/path/to/your/repo HOST=localhost PORT=7687 BATCH_SIZE=1000
@@ -292,10 +308,10 @@ make watch REPO_PATH=/path/to/your/repo HOST=localhost PORT=7687 BATCH_SIZE=1000
 **Multi-terminal workflow:**
 ```bash
 # Terminal 1: Start the realtime updater
-python realtime_updater.py ~/my-project
+uv run python realtime_updater.py ~/my-project
 
 # Terminal 2: Run the AI assistant
-python -m codebase_rag.main start --repo-path ~/my-project
+uv run python -m codebase_rag.main start --repo-path ~/my-project
 ```
 
 **Performance note:** The updater currently recalculates all CALLS relationships on every file change to ensure consistency. This prevents "island" problems where changes in one file aren't reflected in relationships from other files, but may impact performance on very large codebases with frequent changes. **Note:** Optimization of this behavior is a work in progress.
@@ -309,17 +325,17 @@ python -m codebase_rag.main start --repo-path ~/my-project
 **Specify Custom Models:**
 ```bash
 # Use specific local models
-python -m codebase_rag.main start --repo-path /path/to/your/repo \
+uv run python -m codebase_rag.main start --repo-path /path/to/your/repo \
   --orchestrator ollama:llama3.2 \
   --cypher ollama:codellama
 
 # Use specific Gemini models
-python -m codebase_rag.main start --repo-path /path/to/your/repo \
+uv run python -m codebase_rag.main start --repo-path /path/to/your/repo \
   --orchestrator google:gemini-2.0-flash-thinking-exp-01-21 \
   --cypher google:gemini-2.5-flash-lite-preview-06-17
 
 # Use mixed providers
-python -m codebase_rag.main start --repo-path /path/to/your/repo \
+uv run python -m codebase_rag.main start --repo-path /path/to/your/repo \
   --orchestrator google:gemini-2.0-flash-thinking-exp-01-21 \
   --cypher ollama:codellama
 ```
@@ -348,17 +364,17 @@ For programmatic access and integration with other tools, you can export the ent
 
 **Export during graph update:**
 ```bash
-python -m codebase_rag.main start --repo-path /path/to/repo --update-graph --clean -o my_graph.json
+uv run python -m codebase_rag.main start --repo-path /path/to/repo --update-graph --clean -o my_graph.json
 ```
 
 **Export existing graph without updating:**
 ```bash
-python -m codebase_rag.main export -o my_graph.json
+uv run python -m codebase_rag.main export -o my_graph.json
 ```
 
 **Optional: adjust Memgraph batching during export:**
 ```bash
-python -m codebase_rag.main export -o my_graph.json --batch-size 5000
+uv run python -m codebase_rag.main export -o my_graph.json --batch-size 5000
 ```
 
 **Working with exported data:**
@@ -385,7 +401,7 @@ for func in functions[:5]:
 
 **Example analysis script:**
 ```bash
-python examples/graph_export_example.py my_graph.json
+uv run python examples/graph_export_example.py my_graph.json
 ```
 
 This provides a reliable, programmatic way to access your codebase structure without LLM restrictions, perfect for:
@@ -394,30 +410,59 @@ This provides a reliable, programmatic way to access your codebase structure wit
 - Building documentation generators
 - Creating code metrics dashboards
 
+## 🤝 MCP Server Mode
+
+Graph-Code can expose its capabilities to any MCP-compatible agent (Codex CLI, Claude Code, etc.) via a built-in server:
+
+```bash
+uv run python -m codebase_rag.main mcp \
+  --repo-path /path/to/repo \
+  --batch-size 2000
+```
+
+The server shares the same provider configuration as the CLI (`.env`, `--orchestrator`, `--cypher`) and offers four tools:
+- `graph_ingest`: Parse the repository and refresh Memgraph (accepts `repo_path`, `clean`, `batch_size`).
+- `graph_query`: Translate natural-language questions into Cypher and return the results.
+- `optimize_code`: Trigger a single optimization prompt for a given language and optional reference document.
+- `get_status`: Report repo path, Memgraph host/port, and the active model providers.
+- `ingest_status`: Report the last ingest timestamp and how many files have changed since then so you know when to re-run ingestion.
+
+Want a network endpoint instead of stdio? Use the Streamable HTTP transport (SSE/JSON):
+
+```bash
+uv run python -m codebase_rag.main mcp \
+  --transport http --host 127.0.0.1 --port 8765 --path /mcp \
+  --repo-path /path/to/repo --batch-size 2000
+```
+
+Your MCP client should then point to `http://127.0.0.1:8765/mcp` when configuring the server command/endpoint.
+
+Connect from your MCP client by pointing it to the `graph-code-mcp` server (stdio transport). The server prints a configuration table on startup and logs requests via Loguru, so you can monitor activity while other agents make tool calls.
+
 ### Step 4: Code Optimization
 
 For AI-powered codebase optimization with best practices guidance:
 
 **Basic optimization for a specific language:**
 ```bash
-python -m codebase_rag.main optimize python --repo-path /path/to/your/repo
+uv run python -m codebase_rag.main optimize python --repo-path /path/to/your/repo
 ```
 
 **Optimization with reference documentation:**
 ```bash
-python -m codebase_rag.main optimize python \
+uv run python -m codebase_rag.main optimize python \
   --repo-path /path/to/your/repo \
   --reference-document /path/to/best_practices.md
 ```
 
 **Using specific models for optimization:**
 ```bash
-python -m codebase_rag.main optimize javascript \
+uv run python -m codebase_rag.main optimize javascript \
   --repo-path /path/to/frontend \
   --orchestrator google:gemini-2.0-flash-thinking-exp-01-21
 
 # Optional: override Memgraph batch flushing during optimization
-python -m codebase_rag.main optimize javascript --repo-path /path/to/frontend \
+uv run python -m codebase_rag.main optimize javascript --repo-path /path/to/frontend \
   --batch-size 5000
 ```
 
@@ -456,23 +501,23 @@ You can provide reference documentation (like coding standards, architectural gu
 
 ```bash
 # Use company coding standards
-python -m codebase_rag.main optimize python \
+uv run python -m codebase_rag.main optimize python \
   --reference-document ./docs/coding_standards.md
 
 # Use architectural guidelines
-python -m codebase_rag.main optimize java \
+uv run python -m codebase_rag.main optimize java \
   --reference-document ./ARCHITECTURE.md
 
 # Use performance best practices
-python -m codebase_rag.main optimize rust \
+uv run python -m codebase_rag.main optimize rust \
   --reference-document ./docs/performance_guide.md
 ```
 
 The agent will incorporate the guidance from your reference documents when suggesting optimizations, ensuring they align with your project's standards and architectural decisions.
 
 **Common CLI Arguments:**
-- `--orchestrator`: Specify provider:model for main operations (e.g., `google:gemini-2.0-flash-thinking-exp-01-21`, `ollama:llama3.2`)
-- `--cypher`: Specify provider:model for graph queries (e.g., `google:gemini-2.5-flash-lite-preview-06-17`, `ollama:codellama`)
+- `--orchestrator`: Specify provider:model for main operations (e.g., `google:gemini-2.0-flash-thinking-exp-01-21`, `ollama:llama3.2`, `openrouter:meta-llama/llama-3.2-1b-instruct`)
+- `--cypher`: Specify provider:model for graph queries (e.g., `google:gemini-2.5-flash-lite-preview-06-17`, `ollama:codellama`, `openrouter:qwen/qwen-2.5-7b`)
 - `--repo-path`: Path to repository (defaults to current directory)
 - `--batch-size`: Override Memgraph flush batch size (defaults to `MEMGRAPH_BATCH_SIZE` in settings)
 - `--reference-document`: Path to reference documentation (optimization only)
@@ -518,7 +563,7 @@ Configuration is managed through environment variables in `.env` file:
 ### Provider-Specific Settings
 
 #### Orchestrator Model Configuration
-- `ORCHESTRATOR_PROVIDER`: Provider name (`google`, `openai`, `ollama`)
+- `ORCHESTRATOR_PROVIDER`: Provider name (`google`, `openai`, `openrouter`, `ollama`)
 - `ORCHESTRATOR_MODEL`: Model ID (e.g., `gemini-2.5-pro`, `gpt-4o`, `llama3.2`)
 - `ORCHESTRATOR_API_KEY`: API key for the provider (if required)
 - `ORCHESTRATOR_ENDPOINT`: Custom endpoint URL (if required)
@@ -529,7 +574,7 @@ Configuration is managed through environment variables in `.env` file:
 - `ORCHESTRATOR_SERVICE_ACCOUNT_FILE`: Path to service account file (for Vertex AI)
 
 #### Cypher Model Configuration
-- `CYPHER_PROVIDER`: Provider name (`google`, `openai`, `ollama`)
+- `CYPHER_PROVIDER`: Provider name (`google`, `openai`, `openrouter`, `ollama`)
 - `CYPHER_MODEL`: Model ID (e.g., `gemini-2.5-flash`, `gpt-4o-mini`, `codellama`)
 - `CYPHER_API_KEY`: API key for the provider (if required)
 - `CYPHER_ENDPOINT`: Custom endpoint URL (if required)
@@ -547,6 +592,9 @@ Configuration is managed through environment variables in `.env` file:
 - `MEMGRAPH_BATCH_SIZE`: Batch size for Memgraph operations (default: `1000`)
 - `TARGET_REPO_PATH`: Default repository path (default: `.`)
 - `LOCAL_MODEL_ENDPOINT`: Fallback endpoint for Ollama (default: `http://localhost:11434/v1`)
+- `INGEST_IGNORE_DIRS`: Comma-separated list of directories to ignore during ingest (e.g., `.uv-cache,.cache,openspec,codebase_rag/tests`)
+- `EMBED_ENDPOINT` / `EMBED_API_KEY` / `EMBED_MODEL`: External embedding API config (use when you don't want local torch/transformers)
+- `QDRANT_HOST` / `QDRANT_PORT` / `QDRANT_API_KEY`: Remote Qdrant config; if unset, a local on-disk Qdrant is used
 
 ### Key Dependencies
 - **tree-sitter**: Core Tree-sitter library for language-agnostic parsing
@@ -611,13 +659,13 @@ Use the built-in language management tool to add any Tree-sitter supported langu
 
 ```bash
 # Add a language using the standard tree-sitter repository
-python -m codebase_rag.tools.language add-grammar <language-name>
+uv run python -m codebase_rag.tools.language add-grammar <language-name>
 
 # Examples:
-python -m codebase_rag.tools.language add-grammar c-sharp
-python -m codebase_rag.tools.language add-grammar php
-python -m codebase_rag.tools.language add-grammar ruby
-python -m codebase_rag.tools.language add-grammar kotlin
+uv run python -m codebase_rag.tools.language add-grammar c-sharp
+uv run python -m codebase_rag.tools.language add-grammar php
+uv run python -m codebase_rag.tools.language add-grammar ruby
+uv run python -m codebase_rag.tools.language add-grammar kotlin
 ```
 
 #### Custom Grammar Repositories
@@ -626,7 +674,7 @@ For languages hosted outside the standard tree-sitter organization:
 
 ```bash
 # Add a language from a custom repository
-python -m codebase_rag.tools.language add-grammar --grammar-url https://github.com/custom/tree-sitter-mylang
+uv run python -m codebase_rag.tools.language add-grammar --grammar-url https://github.com/custom/tree-sitter-mylang
 ```
 
 #### What Happens Automatically
@@ -647,7 +695,7 @@ When you add a language, the tool automatically:
 #### Example: Adding C# Support
 
 ```bash
-$ python -m codebase_rag.tools.language add-grammar c-sharp
+$ uv run python -m codebase_rag.tools.language add-grammar c-sharp
 🔍 Using default tree-sitter URL: https://github.com/tree-sitter/tree-sitter-c-sharp
 🔄 Adding submodule from https://github.com/tree-sitter/tree-sitter-c-sharp...
 ✅ Successfully added submodule at grammars/tree-sitter-c-sharp
@@ -667,10 +715,10 @@ Calls: ['invocation_expression']
 
 ```bash
 # List all configured languages
-python -m codebase_rag.tools.language list-languages
+uv run python -m codebase_rag.tools.language list-languages
 
 # Remove a language (this also removes the git submodule unless --keep-submodule is specified)
-python -m codebase_rag.tools.language remove-language <language-name>
+uv run python -m codebase_rag.tools.language remove-language <language-name>
 ```
 
 #### Language Configuration
@@ -692,7 +740,7 @@ The system uses a configuration-driven approach for language support. Each langu
 
 **Grammar not found**: If the automatic URL doesn't work, use a custom URL:
 ```bash
-python -m codebase_rag.tools.language add-grammar --grammar-url https://github.com/custom/tree-sitter-mylang
+uv run python -m codebase_rag.tools.language add-grammar --grammar-url https://github.com/custom/tree-sitter-mylang
 ```
 
 **Version incompatibility**: If you get "Incompatible Language version" errors, update your tree-sitter package:
@@ -707,7 +755,7 @@ uv add tree-sitter@latest
 You can build a binary of the application using the `build_binary.py` script. This script uses PyInstaller to package the application and its dependencies into a single executable.
 
 ```bash
-python build_binary.py
+uv run python build_binary.py
 ```
 The resulting binary will be located in the `dist` directory.
 

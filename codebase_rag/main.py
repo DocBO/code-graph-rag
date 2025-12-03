@@ -29,17 +29,10 @@ from .config import (
     settings,
 )
 from .graph_updater import GraphUpdater, MemgraphIngestor
+from .ingest_metadata import write_ingest_metadata
+from .mcp import serve_mcp_http, serve_mcp_stdio
 from .parser_loader import load_parsers
-from .services.llm import CypherGenerator, create_rag_orchestrator
-from .tools.code_retrieval import CodeRetriever, create_code_retrieval_tool
-from .tools.codebase_query import create_query_tool
-from .tools.directory_lister import DirectoryLister, create_directory_lister_tool
-from .tools.document_analyzer import DocumentAnalyzer, create_document_analyzer_tool
-from .tools.file_editor import FileEditor, create_file_editor_tool
-from .tools.file_reader import FileReader, create_file_reader_tool
-from .tools.file_writer import FileWriter, create_file_writer_tool
-from .tools.shell_command import ShellCommander, create_shell_command_tool
-from .tools.semantic_search import create_semantic_search_tool, create_get_function_source_tool
+from .runtime import initialize_services_and_agent
 
 # Style constants
 confirm_edits_globally = True
@@ -706,71 +699,6 @@ def _export_graph_to_file(ingestor: MemgraphIngestor, output: str) -> bool:
         return False
 
 
-def _initialize_services_and_agent(repo_path: str, ingestor: MemgraphIngestor) -> Any:
-    """Initializes all services and creates the RAG agent."""
-    # Validate provider configurations before initializing any LLM services
-    from .providers.base import get_provider
-
-    def _validate_provider_config(role: str, config: Any) -> None:
-        """Validate a single provider configuration."""
-        try:
-            provider = get_provider(
-                config.provider,
-                api_key=config.api_key,
-                endpoint=config.endpoint,
-                project_id=config.project_id,
-                region=config.region,
-                provider_type=config.provider_type,
-                thinking_budget=config.thinking_budget,
-                service_account_file=config.service_account_file,
-            )
-            provider.validate_config()
-        except Exception as e:
-            raise ValueError(f"{role.title()} configuration error: {e}") from e
-
-    # Validate both provider configurations
-    _validate_provider_config("orchestrator", settings.active_orchestrator_config)
-    _validate_provider_config("cypher", settings.active_cypher_config)
-
-    cypher_generator = CypherGenerator()
-    code_retriever = CodeRetriever(project_root=repo_path, ingestor=ingestor)
-    file_reader = FileReader(project_root=repo_path)
-    file_writer = FileWriter(project_root=repo_path)
-    file_editor = FileEditor(project_root=repo_path)
-    shell_commander = ShellCommander(
-        project_root=repo_path, timeout=settings.SHELL_COMMAND_TIMEOUT
-    )
-    directory_lister = DirectoryLister(project_root=repo_path)
-    document_analyzer = DocumentAnalyzer(project_root=repo_path)
-
-    query_tool = create_query_tool(ingestor, cypher_generator, console)
-    code_tool = create_code_retrieval_tool(code_retriever)
-    file_reader_tool = create_file_reader_tool(file_reader)
-    file_writer_tool = create_file_writer_tool(file_writer)
-    file_editor_tool = create_file_editor_tool(file_editor)
-    shell_command_tool = create_shell_command_tool(shell_commander)
-    directory_lister_tool = create_directory_lister_tool(directory_lister)
-    document_analyzer_tool = create_document_analyzer_tool(document_analyzer)
-    semantic_search_tool = create_semantic_search_tool()
-    function_source_tool = create_get_function_source_tool()
-
-    rag_agent = create_rag_orchestrator(
-        tools=[
-            query_tool,
-            code_tool,
-            file_reader_tool,
-            file_writer_tool,
-            file_editor_tool,
-            shell_command_tool,
-            directory_lister_tool,
-            document_analyzer_tool,
-            semantic_search_tool,
-            function_source_tool,
-        ]
-    )
-    return rag_agent
-
-
 async def main_async(repo_path: str, batch_size: int) -> None:
     """Initializes services and runs the main application loop."""
     project_root = _setup_common_initialization(repo_path)
@@ -782,6 +710,7 @@ async def main_async(repo_path: str, batch_size: int) -> None:
         host=settings.MEMGRAPH_HOST,
         port=settings.MEMGRAPH_PORT,
         batch_size=batch_size,
+        repo_path=repo_path,
     ) as ingestor:
         console.print("[bold green]Successfully connected to Memgraph.[/bold green]")
         console.print(
@@ -791,7 +720,7 @@ async def main_async(repo_path: str, batch_size: int) -> None:
             )
         )
 
-        rag_agent = _initialize_services_and_agent(repo_path, ingestor)
+        rag_agent = initialize_services_and_agent(repo_path, ingestor, console)
         await run_chat_loop(rag_agent, [], project_root)
 
 
@@ -867,10 +796,17 @@ def start(
             host=settings.MEMGRAPH_HOST,
             port=settings.MEMGRAPH_PORT,
             batch_size=effective_batch_size,
+            repo_path=target_repo_path,
         ) as ingestor:
             if clean:
-                console.print("[bold yellow]Cleaning database...[/bold yellow]")
+                console.print("[bold yellow]Cleaning databases...[/bold yellow]")
                 ingestor.clean_database()
+                # Also clean Qdrant vectors for consistency
+                try:
+                    from .vector_store import clean_collection
+                    clean_collection(repo_path=target_repo_path)
+                except Exception as e:
+                    console.print(f"[bold yellow]Note: Could not clean Qdrant: {e}[/bold yellow]")
             ingestor.ensure_constraints()
 
             # Load parsers and queries
@@ -878,6 +814,9 @@ def start(
 
             updater = GraphUpdater(ingestor, repo_to_update, parsers, queries)
             updater.run()
+
+            # Persist ingest metadata on success
+            write_ingest_metadata(repo_to_update)
 
             # Export graph if output file specified
             if output:
@@ -927,6 +866,7 @@ def export(
             host=settings.MEMGRAPH_HOST,
             port=settings.MEMGRAPH_PORT,
             batch_size=effective_batch_size,
+            repo_path=settings.TARGET_REPO_PATH,
         ) as ingestor:
             console.print("[bold cyan]Exporting graph data...[/bold cyan]")
             if not _export_graph_to_file(ingestor, output):
@@ -967,10 +907,11 @@ async def main_optimize_async(
         host=settings.MEMGRAPH_HOST,
         port=settings.MEMGRAPH_PORT,
         batch_size=effective_batch_size,
+        repo_path=target_repo_path,
     ) as ingestor:
         console.print("[bold green]Successfully connected to Memgraph.[/bold green]")
 
-        rag_agent = _initialize_services_and_agent(target_repo_path, ingestor)
+        rag_agent = initialize_services_and_agent(target_repo_path, ingestor, console)
         await run_optimization_loop(
             rag_agent, [], project_root, language, reference_document
         )
@@ -1035,6 +976,95 @@ def optimize(
         console.print("\n[bold red]Optimization session terminated by user.[/bold red]")
     except ValueError as e:
         console.print(f"[bold red]Startup Error: {e}[/bold red]")
+
+
+@app.command()
+def mcp(
+    repo_path: str | None = typer.Option(
+        None,
+        "--repo-path",
+        help="Path to the repository exposed through the MCP server",
+    ),
+    batch_size: int | None = typer.Option(
+        None,
+        "--batch-size",
+        min=1,
+        help="Number of buffered nodes/relationships before flushing to Memgraph",
+    ),
+    orchestrator: str | None = typer.Option(
+        None,
+        "--orchestrator",
+        help="Specify orchestrator provider:model override for this session",
+    ),
+    cypher: str | None = typer.Option(
+        None,
+        "--cypher",
+        help="Specify cypher provider:model override for this session",
+    ),
+    transport: str = typer.Option(
+        "stdio",
+        "--transport",
+        help="Transport to use: stdio (default) or http",
+    ),
+    host: str = typer.Option(
+        "127.0.0.1",
+        "--host",
+        help="Host/interface for HTTP transport",
+    ),
+    port: int = typer.Option(
+        8765,
+        "--port",
+        min=1,
+        max=65535,
+        help="Port for HTTP transport",
+    ),
+    path: str = typer.Option(
+        "/mcp",
+        "--path",
+        help="HTTP path for MCP requests when using HTTP transport",
+    ),
+) -> None:
+    """Start Graph-Code as an MCP server for external agents."""
+
+    target_repo_path = repo_path or settings.TARGET_REPO_PATH
+    _update_model_settings(orchestrator, cypher)
+    project_root = _setup_common_initialization(target_repo_path)
+    effective_batch_size = settings.resolve_batch_size(batch_size)
+
+    table = _create_configuration_table(
+        str(project_root), title="Graph-Code MCP Server Configuration"
+    )
+    console.print(table)
+    transport_lower = transport.lower()
+
+    if transport_lower == "stdio":
+        console.print(
+            "[bold green]Starting MCP server over stdio (Ctrl+C to stop)...[/bold green]"
+        )
+        try:
+            asyncio.run(serve_mcp_stdio(str(project_root), effective_batch_size))
+        except KeyboardInterrupt:
+            console.print("\n[bold red]MCP server stopped by user.[/bold red]")
+    elif transport_lower == "http":
+        console.print(
+            f"[bold green]Starting MCP server over HTTP at http://{host}:{port}{path} (Ctrl+C to stop)...[/bold green]"
+        )
+        try:
+            asyncio.run(
+                serve_mcp_http(
+                    str(project_root),
+                    effective_batch_size,
+                    host=host,
+                    port=port,
+                    path=path,
+                )
+            )
+        except KeyboardInterrupt:
+            console.print("\n[bold red]MCP server stopped by user.[/bold red]")
+    else:
+        console.print(
+            f"[bold red]Unsupported transport '{transport}'. Use 'stdio' or 'http'.[/bold red]"
+        )
 
 
 if __name__ == "__main__":

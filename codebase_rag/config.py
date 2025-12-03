@@ -36,6 +36,7 @@ class AppConfig(BaseSettings):
         env_file=".env",
         env_file_encoding="utf-8",
         case_sensitive=False,
+        extra="ignore",
     )
 
     # Memgraph settings
@@ -77,6 +78,20 @@ class AppConfig(BaseSettings):
     # Runtime overrides
     _active_orchestrator: ModelConfig | None = None
     _active_cypher: ModelConfig | None = None
+
+    # Ingest ignore controls
+    INGEST_IGNORE_DIRS: str | None = (
+        None  # comma-separated list of extra dirs to ignore
+    )
+
+    # External embedding + Qdrant (semantic search) settings
+    EMBED_ENDPOINT: str | None = None
+    EMBED_API_KEY: str | None = None
+    EMBED_MODEL: str | None = None
+    EMBED_DIMENSION: int | None = None
+    QDRANT_HOST: str | None = None
+    QDRANT_PORT: int | None = None
+    QDRANT_API_KEY: str | None = None
 
     def _get_default_config(self, role: str) -> ModelConfig:
         """Determine default configuration for orchestrator or cypher."""
@@ -163,9 +178,15 @@ class AppConfig(BaseSettings):
 settings = AppConfig()
 
 
+def _parse_ignore_dirs(raw: str | None) -> set[str]:
+    if not raw:
+        return set()
+    return {part.strip().rstrip("/") for part in raw.split(",") if part.strip()}
+
+
 # --- Global Ignore Patterns ---
 # Directories and files to ignore during codebase scanning and real-time updates.
-IGNORE_PATTERNS = {
+BASE_IGNORE_PATTERNS = {
     ".git",
     "venv",
     ".venv",
@@ -180,7 +201,11 @@ IGNORE_PATTERNS = {
     ".claude",
     ".idea",
     ".vscode",
+    ".uv-cache",
 }
+
+# Combine base ignores with optional user-provided directories (comma separated)
+IGNORE_PATTERNS = BASE_IGNORE_PATTERNS | _parse_ignore_dirs(settings.INGEST_IGNORE_DIRS)
 IGNORE_SUFFIXES = {".tmp", "~"}
 
 

@@ -9,7 +9,9 @@ _dependency_cache: dict[str, bool] = {}
 def _check_dependency(module_name: str) -> bool:
     """Check if a module is available, with caching."""
     if module_name not in _dependency_cache:
-        _dependency_cache[module_name] = importlib.util.find_spec(module_name) is not None
+        _dependency_cache[module_name] = (
+            importlib.util.find_spec(module_name) is not None
+        )
     return _dependency_cache[module_name]
 
 
@@ -29,20 +31,29 @@ def has_qdrant_client() -> bool:
 
 
 def has_semantic_dependencies() -> bool:
-    """Check if all semantic search dependencies are available.
-    
+    """Check if semantic search dependencies are available.
+
     Returns:
-        True if qdrant_client, torch, and transformers are all available.
+        True if either:
+        1. External embedder is configured (EMBED_ENDPOINT and EMBED_MODEL set), OR
+        2. All local dependencies (qdrant_client, torch, transformers) are available.
     """
+    # Check if external embedder is configured
+    from ..config import settings
+
+    if settings.EMBED_ENDPOINT and settings.EMBED_MODEL:
+        return True
+
+    # Fall back to checking local dependencies
     return has_qdrant_client() and has_torch() and has_transformers()
 
 
 def check_dependencies(required_modules: list[str]) -> bool:
     """Check if all required modules are available.
-    
+
     Args:
         required_modules: List of module names to check
-        
+
     Returns:
         True if all modules are available, False otherwise
     """
@@ -51,10 +62,10 @@ def check_dependencies(required_modules: list[str]) -> bool:
 
 def get_missing_dependencies(required_modules: list[str]) -> list[str]:
     """Get list of missing dependencies.
-    
+
     Args:
         required_modules: List of module names to check
-        
+
     Returns:
         List of missing module names
     """

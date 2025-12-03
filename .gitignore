@@ -15,3 +15,6 @@ wheels/
 .pytest_cache/
 .claude/
 .qdrant_code_embeddings/
+.vscode
+.graphcode_ingest.json
+.graphcode_ingest.json

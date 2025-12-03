@@ -1,15 +1,65 @@
 from collections import defaultdict
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
 import mgclient
 from loguru import logger
 
 
+def execute_read_query(
+    host: str, port: int, query: str, params: dict[str, Any] | None = None
+) -> list[dict[str, Any]]:
+    """Execute a read-only query without creating a full MemgraphIngestor.
+    
+    This is useful for tools that just need to read data and don't need
+    the full ingestion machinery. Avoids connection pool issues.
+    
+    Args:
+        host: Memgraph host
+        port: Memgraph port
+        query: Cypher query
+        params: Query parameters
+        
+    Returns:
+        List of result dictionaries
+        
+    Raises:
+        Exception: If query execution fails
+    """
+    conn = None
+    cursor = None
+    try:
+        conn = mgclient.connect(host=host, port=port)
+        cursor = conn.cursor()
+        cursor.execute(query, params or {})
+        
+        if not cursor.description:
+            return []
+        
+        column_names = [desc.name for desc in cursor.description]
+        return [dict(zip(column_names, row)) for row in cursor.fetchall()]
+    except Exception as e:
+        error_str = str(e).lower()
+        if "unexpected" in error_str and ("eof" in error_str or ";" in error_str):
+            logger.error(f"!!! Cypher Syntax Error (likely invalid semicolon or syntax): {e}")
+            logger.error(f"    Query: {query}")
+            logger.error(f"    Hint: Cypher does not use semicolons. Ensure query is valid.")
+        else:
+            logger.error(f"Query execution failed: {e}")
+            logger.error(f"    Query: {query}")
+        raise
+    finally:
+        if cursor:
+            cursor.close()
+        if conn:
+            conn.close()
+
+
 class MemgraphIngestor:
     """Handles all communication and query execution with the Memgraph database."""
 
-    def __init__(self, host: str, port: int, batch_size: int = 1000):
+    def __init__(self, host: str, port: int, batch_size: int = 1000, repo_path: str | Path | None = None):
         self._host = host
         self._port = port
         if batch_size < 1:
@@ -18,6 +68,8 @@ class MemgraphIngestor:
         self.conn: mgclient.Connection | None = None
         self.node_buffer: list[tuple[str, dict[str, Any]]] = []
         self.relationship_buffer: list[tuple[tuple, str, tuple, dict | None]] = []
+        # Store repo_path as a normalized absolute path string
+        self.repo_path = str(Path(repo_path).resolve()) if repo_path else "."
         self.unique_constraints = {
             "Project": "name",
             "Package": "qualified_name",
@@ -50,6 +102,21 @@ class MemgraphIngestor:
             self.conn.close()
             logger.info("\nDisconnected from Memgraph.")
 
+    def _get_repo_filter(self, node_var: str = "n") -> str:
+        """Get a Cypher WHERE clause filter for the current repo.
+        
+        Args:
+            node_var: The variable name in the Cypher query (default 'n')
+            
+        Returns:
+            A WHERE clause fragment, or empty string if repo_path is "."
+            Example: "(n._repo_path = 'path') AND "
+        """
+        if self.repo_path == ".":
+            return ""
+        # Return the filter as a clause fragment that can be added to WHERE
+        return f"({node_var}._repo_path = '{self.repo_path}') AND "
+
     def _execute_query(self, query: str, params: dict[str, Any] | None = None) -> list:
         if not self.conn:
             raise ConnectionError("Not connected to Memgraph.")
@@ -63,9 +130,15 @@ class MemgraphIngestor:
             column_names = [desc.name for desc in cursor.description]
             return [dict(zip(column_names, row)) for row in cursor.fetchall()]
         except Exception as e:
-            if (
-                "already exists" not in str(e).lower()
-                and "constraint" not in str(e).lower()
+            error_str = str(e).lower()
+            # Check for common Cypher syntax errors
+            if "unexpected" in error_str and ("eof" in error_str or ";" in error_str):
+                logger.error(f"!!! Cypher Syntax Error (likely invalid semicolon or syntax): {e}")
+                logger.error(f"    Query: {query}")
+                logger.error(f"    Hint: Cypher does not use semicolons. Ensure query is valid.")
+            elif (
+                "already exists" not in error_str
+                and "constraint" not in error_str
             ):
                 logger.error(f"!!! Cypher Error: {e}")
                 logger.error(f"    Query: {query}")
@@ -140,8 +213,10 @@ class MemgraphIngestor:
         logger.info("Constraints checked/created.")
 
     def ensure_node_batch(self, label: str, properties: dict[str, Any]) -> None:
-        """Adds a node to the buffer."""
-        self.node_buffer.append((label, properties))
+        """Adds a node to the buffer. Automatically adds repo_path to properties."""
+        # Always add repo_path to ensure repo isolation
+        properties_with_repo = {**properties, "_repo_path": self.repo_path}
+        self.node_buffer.append((label, properties_with_repo))
         if len(self.node_buffer) >= self.batch_size:
             logger.debug(
                 "Node buffer reached batch size ({}). Performing incremental flush.",

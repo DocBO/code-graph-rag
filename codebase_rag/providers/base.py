@@ -125,6 +125,40 @@ class OpenAIProvider(ModelProvider):
         return OpenAIResponsesModel(model_id, provider=provider, **kwargs)
 
 
+class OpenRouterProvider(ModelProvider):
+    """OpenRouter provider using the OpenAI-compatible API surface."""
+
+    def __init__(
+        self,
+        api_key: str | None = None,
+        endpoint: str | None = None,
+        **kwargs: Any,
+    ) -> None:
+        super().__init__(**kwargs)
+        self.api_key = api_key
+        self.endpoint = endpoint or "https://openrouter.ai/api/v1"
+
+    @property
+    def provider_name(self) -> str:
+        return "openrouter"
+
+    def validate_config(self) -> None:
+        if not self.api_key:
+            raise ValueError(
+                "OpenRouter provider requires api_key. "
+                "Set ORCHESTRATOR_API_KEY or CYPHER_API_KEY in .env file."
+            )
+
+    def create_model(self, model_id: str, **kwargs: Any) -> OpenAIResponsesModel:
+        self.validate_config()
+
+        provider = PydanticOpenAIProvider(
+            api_key=self.api_key,
+            base_url=self.endpoint,
+        )
+        return OpenAIResponsesModel(model_id, provider=provider, **kwargs)
+
+
 class OllamaProvider(ModelProvider):
     """Ollama local provider."""
 
@@ -163,6 +197,7 @@ class OllamaProvider(ModelProvider):
 PROVIDER_REGISTRY: dict[str, type[ModelProvider]] = {
     "google": GoogleProvider,
     "openai": OpenAIProvider,
+    "openrouter": OpenRouterProvider,
     "ollama": OllamaProvider,
 }
 

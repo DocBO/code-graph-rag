@@ -10,7 +10,8 @@ def extract_source_lines(
     file_path: Path, 
     start_line: int, 
     end_line: int, 
-    encoding: str = 'utf-8'
+    encoding: str = 'utf-8',
+    repo_path: str | Path | None = None
 ) -> str | None:
     """Extract source code lines from a file.
     
@@ -22,6 +23,7 @@ def extract_source_lines(
         start_line: Start line number (1-based indexing)
         end_line: End line number (1-based indexing, inclusive)
         encoding: File encoding (default: utf-8)
+        repo_path: Repository root path (optional, used to resolve relative paths)
         
     Returns:
         Extracted source code as string, or None if extraction fails
@@ -29,8 +31,13 @@ def extract_source_lines(
     Raises:
         None - All exceptions are caught and logged
     """
-    if not file_path.exists():
-        logger.warning(f"Source file not found: {file_path}")
+    # Resolve relative path using repo_path if provided
+    resolved_path = file_path
+    if not file_path.is_absolute() and repo_path:
+        resolved_path = Path(repo_path) / file_path
+    
+    if not resolved_path.exists():
+        logger.warning(f"Source file not found: {resolved_path}")
         return None
         
     if start_line < 1 or end_line < 1 or start_line > end_line:
@@ -38,14 +45,14 @@ def extract_source_lines(
         return None
     
     try:
-        with open(file_path, 'r', encoding=encoding) as f:
+        with open(resolved_path, 'r', encoding=encoding) as f:
             lines = f.readlines()
             
             # Validate line range against file content
             if start_line > len(lines) or end_line > len(lines):
                 logger.warning(
                     f"Line range {start_line}-{end_line} exceeds file length "
-                    f"{len(lines)} in {file_path}"
+                    f"{len(lines)} in {resolved_path}"
                 )
                 return None
             
@@ -54,7 +61,7 @@ def extract_source_lines(
             return ''.join(extracted_lines).strip()
             
     except Exception as e:
-        logger.warning(f"Failed to extract source from {file_path}: {e}")
+        logger.warning(f"Failed to extract source from {resolved_path}: {e}")
         return None
 
 
@@ -64,7 +71,8 @@ def extract_source_with_fallback(
     end_line: int,
     qualified_name: str | None = None,
     ast_extractor: Callable | None = None,
-    encoding: str = 'utf-8'
+    encoding: str = 'utf-8',
+    repo_path: str | Path | None = None
 ) -> str | None:
     """Extract source code with AST-based extraction and line-based fallback.
     
@@ -79,6 +87,7 @@ def extract_source_with_fallback(
         qualified_name: Function qualified name (for AST extraction)
         ast_extractor: Optional function for AST-based extraction
         encoding: File encoding (default: utf-8)
+        repo_path: Repository root path (optional, used to resolve relative paths)
         
     Returns:
         Extracted source code as string, or None if extraction fails
@@ -92,14 +101,15 @@ def extract_source_with_fallback(
         except Exception as e:
             logger.debug(f"AST extraction failed for {qualified_name}: {e}")
     
-    # Fallback to line-based extraction
-    return extract_source_lines(file_path, start_line, end_line, encoding)
+    # Fallback to line-based extraction with repo_path support
+    return extract_source_lines(file_path, start_line, end_line, encoding, repo_path=repo_path)
 
 
 def validate_source_location(
     file_path: str | None, 
     start_line: int | None, 
-    end_line: int | None
+    end_line: int | None,
+    repo_path: str | Path | None = None
 ) -> tuple[bool, Path | None]:
     """Validate source location parameters.
     
@@ -107,6 +117,7 @@ def validate_source_location(
         file_path: File path string (may be None)
         start_line: Start line number (may be None) 
         end_line: End line number (may be None)
+        repo_path: Repository root path (optional, used to resolve relative paths)
         
     Returns:
         Tuple of (is_valid, path_object)
@@ -116,6 +127,9 @@ def validate_source_location(
         
     try:
         path_obj = Path(file_path)
+        # Resolve relative path using repo_path if provided
+        if not path_obj.is_absolute() and repo_path:
+            path_obj = Path(repo_path) / path_obj
         return True, path_obj
     except Exception:
         return False, None

@@ -12,6 +12,7 @@ from codebase_rag.providers.base import (
     ModelProvider,
     OllamaProvider,
     OpenAIProvider,
+    OpenRouterProvider,
     get_provider,
     list_providers,
     register_provider,
@@ -35,6 +36,11 @@ class TestProviderRegistry:
         assert isinstance(openai_provider, OpenAIProvider)
         assert openai_provider.provider_name == "openai"
 
+        # Test OpenRouter provider
+        openrouter_provider = get_provider("openrouter", api_key="test-key")
+        assert isinstance(openrouter_provider, OpenRouterProvider)
+        assert openrouter_provider.provider_name == "openrouter"
+
         # Test Ollama provider
         ollama_provider = get_provider("ollama", endpoint="http://localhost:11434/v1")
         assert isinstance(ollama_provider, OllamaProvider)
@@ -50,8 +56,9 @@ class TestProviderRegistry:
         providers = list_providers()
         assert "google" in providers
         assert "openai" in providers
+        assert "openrouter" in providers
         assert "ollama" in providers
-        assert len(providers) >= 3
+        assert len(providers) >= 4
 
     def test_register_custom_provider(self) -> None:
         """Test registering a custom provider."""
@@ -160,6 +167,29 @@ class TestOpenAIProvider:
             api_key="sk-test-key", endpoint="https://api.custom-openai.com/v1"
         )
         assert provider.endpoint == "https://api.custom-openai.com/v1"
+
+
+class TestOpenRouterProvider:
+    """Test OpenRouter provider functionality."""
+
+    def test_openrouter_configuration(self) -> None:
+        """Test OpenRouter provider default configuration."""
+        provider = OpenRouterProvider(api_key="or-key")
+        assert provider.provider_name == "openrouter"
+        assert provider.api_key == "or-key"
+        assert provider.endpoint == "https://openrouter.ai/api/v1"
+
+        # Custom endpoint should be respected
+        custom_provider = OpenRouterProvider(
+            api_key="or-key", endpoint="https://proxy.example.com/v1"
+        )
+        assert custom_provider.endpoint == "https://proxy.example.com/v1"
+
+    def test_openrouter_validation_error(self) -> None:
+        """Test that OpenRouter provider validation fails without API key."""
+        provider = OpenRouterProvider()
+        with pytest.raises(ValueError, match="OpenRouter provider requires api_key"):
+            provider.validate_config()
 
 
 class TestOllamaProvider:
@@ -292,6 +322,26 @@ class TestModelCreation:
         )
         mock_openai_model.assert_called_once_with(
             "gpt-4o", provider=mock_openai_provider.return_value
+        )
+
+    @patch("codebase_rag.providers.base.PydanticOpenAIProvider")
+    @patch("codebase_rag.providers.base.OpenAIResponsesModel")
+    def test_openrouter_model_creation(
+        self, mock_openai_model: Any, mock_openai_provider: Any
+    ) -> None:
+        """Test OpenRouter model creation."""
+        provider = OpenRouterProvider(api_key="sk-test-key")
+
+        mock_model = MagicMock()
+        mock_openai_model.return_value = mock_model
+
+        provider.create_model("anthropic/sonnet")
+
+        mock_openai_provider.assert_called_once_with(
+            api_key="sk-test-key", base_url="https://openrouter.ai/api/v1"
+        )
+        mock_openai_model.assert_called_once_with(
+            "anthropic/sonnet", provider=mock_openai_provider.return_value
         )
 
     @patch("codebase_rag.providers.base.PydanticOpenAIProvider")

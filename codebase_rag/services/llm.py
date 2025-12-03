@@ -17,12 +17,36 @@ class LLMGenerationError(Exception):
 
 
 def _clean_cypher_response(response_text: str) -> str:
-    """Utility to clean up common LLM formatting artifacts from a Cypher query."""
-    query = response_text.strip().replace("`", "")
-    if query.startswith("cypher"):
+    """Utility to clean up common LLM formatting artifacts from a Cypher query.
+    
+    Handles:
+    - Markdown code blocks (```cypher ... ```)
+    - Extra whitespace and formatting
+    - Trailing semicolons (removes them - Cypher doesn't use semicolons)
+    """
+    query = response_text.strip()
+    
+    # Remove markdown code blocks
+    if query.startswith("```"):
+        # Remove opening ```cypher or ```
+        query = query[3:]
+        if query.startswith("cypher"):
+            query = query[6:]
+        # Remove closing ```
+        if query.endswith("```"):
+            query = query[:-3]
+    
+    # Remove backticks
+    query = query.strip().replace("`", "")
+    
+    # Remove 'cypher' keyword if it appears at the start
+    if query.lower().startswith("cypher"):
         query = query[6:].strip()
-    if not query.endswith(";"):
-        query += ";"
+    
+    # IMPORTANT: Remove trailing semicolons - Cypher doesn't use them!
+    # The LLM often adds them from SQL/SQL-like training data
+    query = query.rstrip(";").strip()
+    
     return query
 
 
@@ -80,8 +104,26 @@ class CypherGenerator:
                 )
 
             query = _clean_cypher_response(result.output)
+            
+            # Validate the cleaned query
+            query_upper = query.upper().strip()
+            if not query_upper.startswith("MATCH"):
+                raise LLMGenerationError(
+                    f"Generated query doesn't start with MATCH clause: {query}"
+                )
+            
+            # Warn about common Cypher syntax issues
+            if ";" in query:
+                logger.warning(
+                    f"Query contains semicolons which aren't valid in Cypher. "
+                    f"Removing them. Query: {query}"
+                )
+                query = query.replace(";", "")
+            
             logger.info(f"  [CypherGenerator] Generated Cypher: {query}")
             return query
+        except LLMGenerationError:
+            raise
         except Exception as e:
             logger.error(f"  [CypherGenerator] Error: {e}")
             raise LLMGenerationError(f"Cypher generation failed: {e}") from e

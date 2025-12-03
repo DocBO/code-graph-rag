@@ -1,0 +1,4 @@
+1. [x] Design the MCP server architecture: define which Graph-Code operations map to MCP tools, required inputs/outputs, and how configuration (repo path, Memgraph, providers) is shared.
+2. [x] Implement the MCP server module with a start command (e.g., `python -m codebase_rag.main mcp-server` or `graph-code mcp`), exposing tools for graph ingest/update, natural-language queries, and optimizer kicks, plus a status/config tool.
+3. [x] Update documentation (`README.md`, `docs/`) with instructions for launching the MCP server and connecting MCP-compatible agents; mention any environment variables.
+4. [x] Add automated tests (unit or integration) that spin up the MCP server module in-process and verify `list_tools` + at least one tool invocation, and document manual validation steps (e.g., connect via Codex CLI MCP client).

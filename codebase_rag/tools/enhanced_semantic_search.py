@@ -21,7 +21,7 @@ def create_enhanced_semantic_search_tool(repo_path: str | None = None, console: 
     # Store repo_path in semantic_search module context
     from .semantic_search import _repo_path_context as _
     from . import semantic_search as ss_module
-    ss_module._repo_path_context = repo_path
+    ss_module._repo_path_context = ss_module._normalize_repo_path(repo_path)
     
     if console is None:
         console = Console(width=None, force_terminal=True)

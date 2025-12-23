@@ -45,6 +45,14 @@ Relationships (source)-[REL_TYPE]->(target):
 """
 
 # ======================================================================================
+#  CONTEXT SYNTHESIS PROMPT
+# ======================================================================================
+CONTEXT_SYNTHESIS_PROMPT = """
+You are an expert assistant. Answer the user's question using ONLY the provided context.
+If the context is insufficient, say so and explain what is missing.
+"""
+
+# ======================================================================================
 #  RAG ORCHESTRATOR PROMPT
 # ======================================================================================
 RAG_ORCHESTRATOR_SYSTEM_PROMPT = """

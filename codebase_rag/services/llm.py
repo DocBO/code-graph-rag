@@ -5,6 +5,7 @@ from ..config import settings
 from ..prompts import (
     CYPHER_SYSTEM_PROMPT,
     LOCAL_CYPHER_SYSTEM_PROMPT,
+    CONTEXT_SYNTHESIS_PROMPT,
     RAG_ORCHESTRATOR_SYSTEM_PROMPT,
 )
 from ..providers.base import get_provider
@@ -156,3 +157,28 @@ def create_rag_orchestrator(tools: list[Tool]) -> Agent:
         )
     except Exception as e:
         raise LLMGenerationError(f"Failed to initialize RAG Orchestrator: {e}") from e
+
+
+def create_context_synthesizer() -> Agent:
+    """Factory function to create a context-only synthesis agent."""
+    try:
+        config = settings.active_orchestrator_config
+        provider = get_provider(
+            config.provider,
+            api_key=config.api_key,
+            endpoint=config.endpoint,
+            project_id=config.project_id,
+            region=config.region,
+            provider_type=config.provider_type,
+            thinking_budget=config.thinking_budget,
+        )
+        llm = provider.create_model(config.model_id)
+        return Agent(
+            model=llm,
+            system_prompt=CONTEXT_SYNTHESIS_PROMPT,
+            output_type=str,
+        )
+    except Exception as e:
+        raise LLMGenerationError(
+            f"Failed to initialize context synthesizer: {e}"
+        ) from e

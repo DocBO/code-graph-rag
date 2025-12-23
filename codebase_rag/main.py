@@ -33,6 +33,8 @@ from .ingest_metadata import write_ingest_metadata
 from .mcp import serve_mcp_http, serve_mcp_stdio
 from .parser_loader import load_parsers
 from .runtime import initialize_services_and_agent
+from .tools.semantic_seed_strategy import run_semantic_seed_strategy
+from .tools.slash_commands import get_help_text, parse_slash_command
 
 # Style constants
 confirm_edits_globally = True
@@ -298,21 +300,55 @@ Remember: Propose changes first, wait for my approval, then implement.
                 break
             if not question.strip():
                 continue
+            command, stripped_question = parse_slash_command(question)
 
             # Log user question
             log_session_event(f"USER: {question}")
 
+            if command == "/help":
+                response_text = get_help_text()
+                markdown_response = Markdown(response_text)
+                console.print(
+                    Panel(
+                        markdown_response,
+                        title="[bold green]Optimization Agent[/bold green]",
+                        border_style="green",
+                    )
+                )
+                log_session_event(f"ASSISTANT: {response_text}")
+                first_run = False
+                continue
+
             # If previous thinking was cancelled, add session context
             if session_cancelled:
-                question_with_context = question + get_session_context()
+                question_with_context = stripped_question + get_session_context()
                 session_cancelled = False
             else:
-                question_with_context = question
+                question_with_context = stripped_question if command else question
 
             # Handle images in the question
             question_with_context = _handle_chat_images(
                 question_with_context, project_root
             )
+
+            if command == "/semantic-seed-strategy":
+                with console.status(
+                    "[bold green]Running semantic seed strategy...[/bold green]"
+                ):
+                    response_text = await run_semantic_seed_strategy(
+                        question_with_context, str(project_root)
+                    )
+                markdown_response = Markdown(response_text)
+                console.print(
+                    Panel(
+                        markdown_response,
+                        title="[bold green]Optimization Agent[/bold green]",
+                        border_style="green",
+                    )
+                )
+                log_session_event(f"ASSISTANT: {response_text}")
+                first_run = False
+                continue
 
             with console.status(
                 "[bold green]Agent is analyzing codebase... (Press Ctrl+C to cancel)[/bold green]"
@@ -538,21 +574,53 @@ async def run_chat_loop(
                 break
             if not question.strip():
                 continue
+            command, stripped_question = parse_slash_command(question)
 
             # Log user question
             log_session_event(f"USER: {question}")
 
+            if command == "/help":
+                response_text = get_help_text()
+                markdown_response = Markdown(response_text)
+                console.print(
+                    Panel(
+                        markdown_response,
+                        title="[bold green]Assistant[/bold green]",
+                        border_style="green",
+                    )
+                )
+                log_session_event(f"ASSISTANT: {response_text}")
+                continue
+
             # If previous thinking was cancelled, add session context
             if session_cancelled:
-                question_with_context = question + get_session_context()
+                question_with_context = stripped_question + get_session_context()
                 session_cancelled = False
             else:
-                question_with_context = question
+                question_with_context = stripped_question if command else question
 
             # Handle images in the question
             question_with_context = _handle_chat_images(
                 question_with_context, project_root
             )
+
+            if command == "/semantic-seed-strategy":
+                with console.status(
+                    "[bold green]Running semantic seed strategy...[/bold green]"
+                ):
+                    response_text = await run_semantic_seed_strategy(
+                        question_with_context, str(project_root)
+                    )
+                markdown_response = Markdown(response_text)
+                console.print(
+                    Panel(
+                        markdown_response,
+                        title="[bold green]Assistant[/bold green]",
+                        border_style="green",
+                    )
+                )
+                log_session_event(f"ASSISTANT: {response_text}")
+                continue
 
             # Check if this might be an edit operation and warn user upfront
             might_edit = is_edit_operation_request(question)

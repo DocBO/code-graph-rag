@@ -1,4 +1,5 @@
 # codebase_rag/tools/semantic_search.py
+from pathlib import Path
 from typing import Any
 
 from loguru import logger
@@ -7,6 +8,12 @@ from ..utils.dependencies import has_semantic_dependencies
 
 # Module-level storage for repo_path (set by tool creators)
 _repo_path_context: str | None = None
+
+
+def _normalize_repo_path(repo_path: str | None) -> str | None:
+    if repo_path is None:
+        return None
+    return str(Path(repo_path).resolve())
 
 def semantic_code_search(query: str, top_k: int = 5, repo_path: str | None = None) -> list[dict[str, Any]]:
     """
@@ -18,7 +25,7 @@ def semantic_code_search(query: str, top_k: int = 5, repo_path: str | None = Non
         return []
     
     # Use provided repo_path, fall back to context, then to settings
-    effective_repo_path = repo_path or _repo_path_context or None
+    effective_repo_path = _normalize_repo_path(repo_path or _repo_path_context)
     
     try:
         from ..embedder import embed_code
@@ -116,7 +123,7 @@ async def semantic_code_search_async(query: str, top_k: int = 5, repo_path: str 
         from ..config import settings
         
         # Fallback chain: parameter > context > env var
-        effective_repo_path = repo_path or _repo_path_context or None
+        effective_repo_path = _normalize_repo_path(repo_path or _repo_path_context)
         
         # Generate embedding for the query
         query_embedding = await embed_code_async(query)
@@ -194,7 +201,7 @@ def get_function_source_code(node_id: int, repo_path: str | None = None) -> str 
         from ..utils.source_extraction import extract_source_lines, validate_source_location
         
         # Fallback chain: parameter > context > env var
-        effective_repo_path = repo_path or _repo_path_context or None
+        effective_repo_path = _normalize_repo_path(repo_path or _repo_path_context)
         
         # Get node details including file path and line numbers using read-only query
         query = """
@@ -239,7 +246,7 @@ def create_semantic_search_tool(repo_path: str | None = None) -> Tool:
     Stores repo_path in module context for use in nested functions.
     """
     global _repo_path_context
-    _repo_path_context = repo_path
+    _repo_path_context = _normalize_repo_path(repo_path)
     
     async def semantic_search_functions(query: str, top_k: int = 5) -> str:
         """
@@ -290,7 +297,7 @@ def create_get_function_source_tool(repo_path: str | None = None) -> Tool:
     Stores repo_path in module context for use in nested functions.
     """
     global _repo_path_context
-    _repo_path_context = repo_path
+    _repo_path_context = _normalize_repo_path(repo_path)
     
     async def get_function_source_by_id(node_id: int) -> str:
         """

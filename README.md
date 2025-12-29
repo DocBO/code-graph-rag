@@ -251,6 +251,14 @@ Parse and ingest a multi-language repository into the knowledge graph:
 uv run python -m codebase_rag.main start --repo-path /path/to/repo1 --update-graph --clean
 ```
 
+
+**EXAMPLE workflow**
+```bash
+uv run python -m codebase_rag.main start --repo-path  ~/gitlab/novel-wizard --update-graph --clean
+uv run python -m codebase_rag.main mcp --transport http --host 127.0.0.1 --port 8765 --path /mcp --repo-path ~/gitlab/novel-wizard
+uv run python -m codebase_rag.main start --repo-path ~/gitlab/novel-wizard
+```
+
 **For additional repositories (preserve existing data):**
 ```bash
 uv run python -m codebase_rag.main start --repo-path /path/to/repo2 --update-graph

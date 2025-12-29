@@ -114,6 +114,22 @@ def _build_tool_schema(name: str) -> dict[str, Any]:
                 },
                 "additionalProperties": False,
             }
+        case "query_codebase":
+            return {
+                "type": "object",
+                "properties": {
+                    "question": {
+                        "type": "string",
+                        "description": "Natural language question about the codebase.",
+                    },
+                    "strategy": {
+                        "type": "string",
+                        "description": "RAG strategy. Defaults to semantic-seed-strategy.",
+                    },
+                },
+                "required": ["question"],
+                "additionalProperties": False,
+            }
         case _:
             return {"type": "object", "properties": {}, "additionalProperties": True}
 
@@ -264,6 +280,32 @@ class GraphCodeMCPContext:
             "metadata_path": str(metadata_path),
         }
 
+    async def query_codebase(
+        self,
+        question: str,
+        strategy: str = "semantic-seed-strategy",
+    ) -> dict[str, Any]:
+        """Query the codebase using RAG with the specified strategy."""
+
+        if not question.strip():
+            raise ValueError("question must not be empty")
+
+        prompt = f"/{strategy} {question}"
+
+        with MemgraphIngestor(
+            host=settings.MEMGRAPH_HOST,
+            port=settings.MEMGRAPH_PORT,
+            batch_size=self.batch_size,
+        ) as ingestor:
+            rag_agent = initialize_services_and_agent(str(self.default_repo), ingestor)
+            response = await rag_agent.run(prompt)
+
+        return {
+            "question": question,
+            "strategy": strategy,
+            "response": response.output,
+        }
+
     def _default_optimization_prompt(
         self, language: str, reference_document: str | None
     ) -> str:
@@ -398,6 +440,21 @@ class GraphCodeMCPServer:
                     ],
                 },
             ),
+            types.Tool(
+                name="query_codebase",
+                title="Query Codebase (RAG)",
+                description="Query the codebase using natural language questions with configurable RAG strategy. semantic-seed-strategy is the standard default.",
+                inputSchema=_build_tool_schema("query_codebase"),
+                outputSchema={
+                    "type": "object",
+                    "properties": {
+                        "question": {"type": "string"},
+                        "strategy": {"type": "string"},
+                        "response": {"type": "string"},
+                    },
+                    "required": ["question", "strategy", "response"],
+                },
+            ),
         ]
 
     async def _list_tools(
@@ -459,6 +516,13 @@ class GraphCodeMCPServer:
                     else f"No ingest metadata found; {result['changes']['total']} files present"
                 )
                 return self._format_response(result, message)
+
+            if tool_name == "query_codebase":
+                result = await self.context.query_codebase(
+                    question=args.get("question", ""),
+                    strategy=args.get("strategy", "semantic-seed-strategy")
+                )
+                return self._format_response(result, result["response"])
 
             raise ValueError(f"Unsupported tool: {tool_name}")
         except Exception as exc:  # pragma: no cover - error path tested separately

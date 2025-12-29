@@ -69,7 +69,7 @@ class MemgraphIngestor:
         self.node_buffer: list[tuple[str, dict[str, Any]]] = []
         self.relationship_buffer: list[tuple[tuple, str, tuple, dict | None]] = []
         # Store repo_path as a normalized absolute path string
-        self.repo_path = str(Path(repo_path).resolve()) if repo_path else "."
+        self.repo_path = str(Path(repo_path or ".").resolve())
         self.unique_constraints = {
             "Project": "name",
             "Package": "qualified_name",
@@ -148,14 +148,19 @@ class MemgraphIngestor:
             if cursor:
                 cursor.close()
 
-    def _execute_batch(self, query: str, params_list: list[dict[str, Any]]) -> None:
+    def _execute_batch(self, query: str, params_list: list[dict[str, Any]], extra_params: dict[str, Any] | None = None) -> None:
         if not self.conn or not params_list:
             return
         cursor = None
         try:
             cursor = self.conn.cursor()
             batch_query = f"UNWIND $batch AS row\n{query}"
-            cursor.execute(batch_query, {"batch": params_list})
+            
+            full_params = {"batch": params_list}
+            if extra_params:
+                full_params.update(extra_params)
+                
+            cursor.execute(batch_query, full_params)
         except Exception as e:
             if "already exists" not in str(e).lower():
                 logger.error(f"!!! Batch Cypher Error: {e}")
@@ -174,7 +179,7 @@ class MemgraphIngestor:
                 cursor.close()
 
     def _execute_batch_with_return(
-        self, query: str, params_list: list[dict[str, Any]]
+        self, query: str, params_list: list[dict[str, Any]], extra_params: dict[str, Any] | None = None
     ) -> list[dict[str, Any]]:
         """Execute a batch query that returns results."""
         if not self.conn or not params_list:
@@ -183,7 +188,12 @@ class MemgraphIngestor:
         try:
             cursor = self.conn.cursor()
             batch_query = f"UNWIND $batch AS row\n{query}"
-            cursor.execute(batch_query, {"batch": params_list})
+            
+            full_params = {"batch": params_list}
+            if extra_params:
+                full_params.update(extra_params)
+                
+            cursor.execute(batch_query, full_params)
             if not cursor.description:
                 return []
             column_names = [desc.name for desc in cursor.description]
@@ -197,8 +207,11 @@ class MemgraphIngestor:
                 cursor.close()
 
     def clean_database(self) -> None:
-        logger.info("--- Cleaning database... ---")
-        self._execute_query("MATCH (n) DETACH DELETE n;")
+        logger.info(f"--- Cleaning database for repo: {self.repo_path} ---")
+        self._execute_query(
+            "MATCH (n) WHERE n._repo_path = $repo_path DETACH DELETE n;",
+            {"repo_path": self.repo_path},
+        )
         logger.info("--- Database cleaned. ---")
 
     def ensure_constraints(self) -> None:
@@ -292,8 +305,8 @@ class MemgraphIngestor:
 
             flushed_total += len(batch_rows)
 
-            query = f"MERGE (n:{label} {{{id_key}: row.id}})\nSET n += row.props"
-            self._execute_batch(query, batch_rows)
+            query = f"MERGE (n:{label} {{{id_key}: row.id, _repo_path: $repo_path}})\nSET n += row.props"
+            self._execute_batch(query, batch_rows, {"repo_path": self.repo_path})
         logger.info("Flushed {} of {} buffered nodes.", flushed_total, buffer_size)
         if skipped_total:
             logger.info(
@@ -319,8 +332,8 @@ class MemgraphIngestor:
         for pattern, params_list in rels_by_pattern.items():
             from_label, from_key, rel_type, to_label, to_key = pattern
             query = (
-                f"MATCH (a:{from_label} {{{from_key}: row.from_val}}), "
-                f"(b:{to_label} {{{to_key}: row.to_val}})\n"
+                f"MATCH (a:{from_label} {{{from_key}: row.from_val, _repo_path: $repo_path}}), "
+                f"(b:{to_label} {{{to_key}: row.to_val, _repo_path: $repo_path}})\n"
                 f"MERGE (a)-[r:{rel_type}]->(b)\n"
                 f"RETURN count(r) as created"
             )
@@ -331,7 +344,7 @@ class MemgraphIngestor:
                 )
 
             total_attempted += len(params_list)
-            results = self._execute_batch_with_return(query, params_list)
+            results = self._execute_batch_with_return(query, params_list, {"repo_path": self.repo_path})
             batch_successful = (
                 sum(r.get("created", 0) for r in results) if results else 0
             )
@@ -378,16 +391,18 @@ class MemgraphIngestor:
         # Get all nodes with their labels and properties
         nodes_query = """
         MATCH (n)
+        WHERE n._repo_path = $repo_path
         RETURN id(n) as node_id, labels(n) as labels, properties(n) as properties
         """
-        nodes_data = self.fetch_all(nodes_query)
+        nodes_data = self.fetch_all(nodes_query, {"repo_path": self.repo_path})
 
         # Get all relationships with their types and properties
         relationships_query = """
         MATCH (a)-[r]->(b)
+        WHERE a._repo_path = $repo_path AND b._repo_path = $repo_path
         RETURN id(a) as from_id, id(b) as to_id, type(r) as type, properties(r) as properties
         """
-        relationships_data = self.fetch_all(relationships_query)
+        relationships_data = self.fetch_all(relationships_query, {"repo_path": self.repo_path})
 
         graph_data = {
             "nodes": nodes_data,

@@ -158,7 +158,8 @@ def _setup_common_initialization(repo_path: str) -> Path:
     logger.add(sys.stdout, format="{time:YYYY-MM-DD HH:mm:ss.SSS} | {message}")
 
     # Temporary directory cleanup
-    project_root = Path(repo_path).resolve()
+    project_root = Path(repo_path).expanduser().resolve()
+    settings.TARGET_REPO_PATH = str(project_root)
     tmp_dir = project_root / ".tmp"
     if tmp_dir.exists():
         if tmp_dir.is_dir():

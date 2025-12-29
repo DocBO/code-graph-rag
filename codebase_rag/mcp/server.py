@@ -26,6 +26,7 @@ from ..parser_loader import load_parsers
 from ..runtime import initialize_services_and_agent
 from ..services.graph_service import MemgraphIngestor
 from ..services.llm import CypherGenerator
+from ..tools.semantic_seed_strategy import run_semantic_seed_strategy
 
 
 class TransportLoggingMiddleware:
@@ -36,7 +37,18 @@ class TransportLoggingMiddleware:
 
     async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
         if scope.get("type") == "http":
-            logger.info("[MCP HTTP] %s %s", scope.get("method"), scope.get("path"))
+            method = scope.get("method", "UNKNOWN")
+            path = scope.get("path", "UNKNOWN")
+            query_string = scope.get("query_string", b"").decode("utf-8")
+            full_path = f"{path}?{query_string}" if query_string else path
+            
+            # Log basic request info
+            logger.info(f"[MCP HTTP] {method} {full_path}")
+            
+            # Log headers for debugging 400 errors
+            headers = {k.decode("utf-8"): v.decode("utf-8") for k, v in scope.get("headers", [])}
+            logger.debug(f"[MCP HTTP] Headers: {headers}")
+
         await self.app(scope, receive, send)
 
 
@@ -125,6 +137,7 @@ def _build_tool_schema(name: str) -> dict[str, Any]:
                     "strategy": {
                         "type": "string",
                         "description": "RAG strategy. Defaults to semantic-seed-strategy.",
+                        "default": "semantic-seed-strategy",
                     },
                 },
                 "required": ["question"],
@@ -181,6 +194,7 @@ class GraphCodeMCPContext:
                 host=settings.MEMGRAPH_HOST,
                 port=settings.MEMGRAPH_PORT,
                 batch_size=effective_batch,
+                repo_path=target_repo,
             ) as ingestor:
                 ingestor.ensure_constraints()
                 if clean:
@@ -215,6 +229,7 @@ class GraphCodeMCPContext:
                 host=settings.MEMGRAPH_HOST,
                 port=settings.MEMGRAPH_PORT,
                 batch_size=self.batch_size,
+                repo_path=self.default_repo,
             ) as ingestor:
                 return ingestor.fetch_all(cypher_query)
 
@@ -240,6 +255,7 @@ class GraphCodeMCPContext:
             host=settings.MEMGRAPH_HOST,
             port=settings.MEMGRAPH_PORT,
             batch_size=self.batch_size,
+            repo_path=self.default_repo,
         ) as ingestor:
             rag_agent = initialize_services_and_agent(str(self.default_repo), ingestor)
             response = await rag_agent.run(prompt)
@@ -290,12 +306,25 @@ class GraphCodeMCPContext:
         if not question.strip():
             raise ValueError("question must not be empty")
 
-        prompt = f"/{strategy} {question}"
+        if strategy == "semantic-seed-strategy":
+            logger.info(f"Running semantic seed strategy for question: {question}")
+            response_text = await run_semantic_seed_strategy(
+                question, str(self.default_repo)
+            )
+            return {
+                "question": question,
+                "strategy": strategy,
+                "response": response_text,
+            }
+
+        # Fallback to standard agent for other strategies or no strategy
+        prompt = f"/{strategy} {question}" if strategy else question
 
         with MemgraphIngestor(
             host=settings.MEMGRAPH_HOST,
             port=settings.MEMGRAPH_PORT,
             batch_size=self.batch_size,
+            repo_path=self.default_repo,
         ) as ingestor:
             rag_agent = initialize_services_and_agent(str(self.default_repo), ingestor)
             response = await rag_agent.run(prompt)
@@ -329,9 +358,15 @@ class GraphCodeMCPServer:
 
     context: GraphCodeMCPContext
     name: str = "graph-code-mcp"
+    expose_internal_tools: bool = False
 
     def __post_init__(self) -> None:
-        self._tools = self._build_tool_definitions()
+        self._all_tools = self._build_tool_definitions()
+        self.public_tools = (
+            [t for t in self._all_tools if t.name not in {"graph_query", "optimize_code"}]
+            if not self.expose_internal_tools
+            else self._all_tools
+        )
         self.server = Server(
             name=self.name,
             instructions=(
@@ -460,7 +495,7 @@ class GraphCodeMCPServer:
     async def _list_tools(
         self, _: types.ListToolsRequest | None = None
     ) -> list[types.Tool]:
-        return self._tools
+        return self.public_tools
 
     async def _call_tool(
         self, tool_name: str, arguments: dict[str, Any] | None
@@ -591,7 +626,29 @@ async def serve_mcp_http(
         if scope.get("type") != "http":
             await PlainTextResponse("Not Found", status_code=404)(scope, receive, send)
             return
-        await session_manager.handle_request(scope, receive, send)
+
+        async def wrapped_send(message):
+            if message.get("type") == "http.response.start":
+                status = message.get("status")
+                if status >= 400:
+                    logger.warning(f"[MCP HTTP] Response Status: {status}")
+            elif message.get("type") == "http.response.body":
+                body = message.get("body", b"")
+                if body:
+                    try:
+                        # Only log if it looks like an error message
+                        body_text = body.decode("utf-8")
+                        if "error" in body_text.lower() or len(body_text) < 200:
+                            logger.debug(f"[MCP HTTP] Response Body: {body_text}")
+                    except Exception:
+                        pass
+            await send(message)
+
+        try:
+            await session_manager.handle_request(scope, receive, wrapped_send)
+        except Exception as e:
+            logger.error(f"[MCP HTTP] Exception in handle_request: {e}", exc_info=True)
+            await PlainTextResponse(f"Internal Error: {e}", status_code=500)(scope, receive, send)
 
     routes = [Mount(path, app=mcp_asgi)]
     if path != "/":

@@ -77,7 +77,7 @@ class StubContext:
 
 def test_mcp_server_lists_tools_and_invokes_them() -> None:
     context = StubContext()
-    server = GraphCodeMCPServer(context)
+    server = GraphCodeMCPServer(context, expose_internal_tools=True)
     init_options = server.server.create_initialization_options()
 
     async def _run() -> None:

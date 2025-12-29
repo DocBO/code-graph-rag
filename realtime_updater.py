@@ -46,8 +46,11 @@ class CodeChangeEventHandler(FileSystemEventHandler):
 
         # --- Step 1: Delete all old data from the graph for this file ---
         # This provides a clean slate for the updated information.
-        delete_query = "MATCH (m:Module {path: $path})-[*0..]->(c) DETACH DELETE m, c"
-        self.updater.ingestor.execute_write(delete_query, {"path": relative_path_str})
+        delete_query = "MATCH (m:Module {path: $path, _repo_path: $repo_path})-[*0..]->(c) DETACH DELETE m, c"
+        self.updater.ingestor.execute_write(
+            delete_query,
+            {"path": relative_path_str, "repo_path": self.updater.ingestor.repo_path},
+        )
         logger.debug(f"Ran deletion query for path: {relative_path_str}")
 
         # --- Step 2: Clear the specific in-memory state for the file ---
@@ -73,7 +76,10 @@ class CodeChangeEventHandler(FileSystemEventHandler):
         # This is the key to fixing the "island" problem. It ensures that changes
         # in one file are correctly reflected in relationships from all other files.
         logger.info("Recalculating all function call relationships for consistency...")
-        self.updater.ingestor.execute_write("MATCH ()-[r:CALLS]->() DELETE r")
+        self.updater.ingestor.execute_write(
+            "MATCH (n)-[r:CALLS]->() WHERE n._repo_path = $repo_path DELETE r",
+            {"repo_path": self.updater.ingestor.repo_path},
+        )
         self.updater._process_function_calls()
 
         # --- Step 5: Flush all collected changes to the database ---
@@ -94,6 +100,7 @@ def start_watcher(
         host=host,
         port=port,
         batch_size=effective_batch_size,
+        repo_path=repo_path_obj,
     ) as ingestor:
         updater = GraphUpdater(ingestor, repo_path_obj, parsers, queries)
 

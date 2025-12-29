@@ -1,5 +1,27 @@
 # Changelog
 
+## 2025-12-29
+
+### Semantic Search & Qdrant Consistency Fix 🔍
+- **Fixed `/semantic-seed-strategy` inconsistency** - Resolved issues where semantic search would fail due to missing collections or path mismatches.
+- **Automatic Collection Creation** - Qdrant collections are now automatically created on-demand during search if they don't exist.
+- **Path Normalization** - Added `.expanduser()` to path resolution to handle `~` in repository paths consistently across ingestion and search.
+- **Settings Synchronization** - The `settings.TARGET_REPO_PATH` is now explicitly updated during initialization to ensure all services use the same repository context.
+- **Improved Error Resilience** - Added `_ensure_collection_exists()` helper to `vector_store.py` to prevent crashes when searching new repositories.
+
+### Graph Ingestion & Relationship Fixes 🕸️
+- **Fixed CALLS relationship failures** - Resolved "nodes may not exist" warnings during ingestion by ensuring consistent repository isolation.
+- **Fixed Unique Constraint Violations** - Resolved `mgclient.DatabaseError: Unable to commit due to unique constraint violation on :Project(name)` in `realtime_updater.py` and MCP server.
+- **Absolute Path Normalization** - Standardized `MemgraphIngestor` to always resolve `repo_path` to an absolute path, ensuring consistent repository isolation.
+- **Repo-Aware Real-time Updater** - Updated `realtime_updater.py` to use repository-specific filters for all deletion and re-calculation queries.
+- **Repo-Aware Database Operations** - Updated `clean_database` and `export_graph_to_dict` in `graph_service.py` to respect repository isolation.
+- **Built-in Node Creation** - Added automatic creation of nodes for built-in functions (e.g., `setTimeout`) when they are called.
+
+### MCP Server Improvements 🔌
+- **Fixed `query_codebase` default strategy** - The `query_codebase` MCP tool now correctly uses `semantic-seed-strategy` by default.
+- **Direct Strategy Execution** - Updated MCP server to call `run_semantic_seed_strategy` directly instead of passing slash commands to the agent.
+- **Improved MCP Schema** - Added explicit default value for `strategy` in the MCP tool definition.
+
 ## 2025-11-30
 
 ### Connection Pool & Hang Fix - Read-Only Query Helper 🔌

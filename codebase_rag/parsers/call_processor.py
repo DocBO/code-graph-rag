@@ -418,6 +418,17 @@ class CallProcessor:
                 f"(resolved as {callee_type}:{callee_qn})"
             )
 
+            # Ensure built-in nodes exist if they are being called
+            if callee_qn.startswith("builtin."):
+                self.ingestor.ensure_node_batch(
+                    callee_type,
+                    {
+                        "qualified_name": callee_qn,
+                        "name": callee_qn.split(".")[-1],
+                        "is_builtin": True,
+                    },
+                )
+
             # NOTE: We don't call ensure_node_batch here because all Function/Method/Class
             # nodes are already created in Pass 2 (definition processing) before we reach
             # Pass 3 (call processing). Re-creating nodes here would overwrite their
@@ -484,6 +495,18 @@ class CallProcessor:
                         f"      Found nested call from {caller_qn} to {call_name} "
                         f"(resolved as {callee_type}:{callee_qn})"
                     )
+                    
+                    # Ensure built-in nodes exist if they are being called
+                    if callee_qn.startswith("builtin."):
+                        self.ingestor.ensure_node_batch(
+                            callee_type,
+                            {
+                                "qualified_name": callee_qn,
+                                "name": callee_qn.split(".")[-1],
+                                "is_builtin": True,
+                            },
+                        )
+
                     # NOTE: We don't call ensure_node_batch here - nodes already exist from Pass 2
                     self.ingestor.ensure_relationship_batch(
                         (caller_type, "qualified_name", caller_qn),

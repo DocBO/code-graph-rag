@@ -30,7 +30,7 @@ def get_collection_name(repo_path: str | Path | None = None) -> str:
     if repo_path is None:
         repo_path = settings.TARGET_REPO_PATH or "."
     
-    repo_path = str(Path(repo_path).resolve())
+    repo_path = str(Path(repo_path).expanduser().resolve())
     # Create a hash of the repo path to keep collection names reasonable length
     path_hash = hashlib.md5(repo_path.encode()).hexdigest()[:8]
     return f"code_embeddings_{path_hash}"
@@ -88,16 +88,16 @@ if has_qdrant_client():
         else:
             _CLIENT = QdrantClient(path="./.qdrant_code_embeddings")
 
-        # Use configured embedding dimension, fallback to 768
-        vector_size = settings.EMBED_DIMENSION or 768
-        collection_name = _get_collection_name()
+        return _CLIENT
 
-        if not _CLIENT.collection_exists(collection_name):
-            _CLIENT.create_collection(
+    def _ensure_collection_exists(client: QdrantClient, collection_name: str) -> None:
+        """Ensure the collection exists in Qdrant."""
+        if not client.collection_exists(collection_name):
+            vector_size = settings.EMBED_DIMENSION or 768
+            client.create_collection(
                 collection_name=collection_name,
                 vectors_config=VectorParams(size=vector_size, distance=Distance.COSINE),
             )
-        return _CLIENT
 
     def store_embedding(
         node_id: int, embedding: list[float], qualified_name: str, repo_path: str | Path | None = None
@@ -112,6 +112,8 @@ if has_qdrant_client():
         try:
             client = get_qdrant_client()
             collection_name = get_collection_name(repo_path)
+            _ensure_collection_exists(client, collection_name)
+            
             stable_point_id = get_stable_point_id(qualified_name)
             client.upsert(
                 collection_name=collection_name,
@@ -134,6 +136,8 @@ if has_qdrant_client():
         try:
             client = get_qdrant_client()
             collection_name = get_collection_name(repo_path)
+            _ensure_collection_exists(client, collection_name)
+            
             hits = client.search(
                 collection_name=collection_name,
                 query_vector=query_embedding,

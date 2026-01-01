@@ -206,7 +206,7 @@ BASE_IGNORE_PATTERNS = {
 
 # Combine base ignores with optional user-provided directories (comma separated)
 IGNORE_PATTERNS = BASE_IGNORE_PATTERNS | _parse_ignore_dirs(settings.INGEST_IGNORE_DIRS)
-IGNORE_SUFFIXES = {".tmp", "~"}
+IGNORE_SUFFIXES = {".tmp", "~", ".md", ".txt"}
 
 
 # --- Edit Operation Constants ---

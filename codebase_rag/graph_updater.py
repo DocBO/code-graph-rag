@@ -7,7 +7,7 @@ from typing import Any
 from loguru import logger
 from tree_sitter import Node, Parser
 
-from .config import IGNORE_PATTERNS
+from .config import IGNORE_PATTERNS, IGNORE_SUFFIXES
 from .language_config import LANGUAGE_FQN_CONFIGS, get_language_config
 from .parsers.factory import ProcessorFactory
 from .services.graph_service import MemgraphIngestor
@@ -273,6 +273,7 @@ class GraphUpdater:
         self.simple_name_lookup: dict[str, set[str]] = defaultdict(set)
         self.ast_cache = BoundedASTCache(max_entries=1000, max_memory_mb=500)
         self.ignore_dirs = IGNORE_PATTERNS
+        self.ignore_suffixes = IGNORE_SUFFIXES
 
         # Create processor factory with all dependencies
         self.factory = ProcessorFactory(
@@ -486,6 +487,10 @@ class GraphUpdater:
 
         def should_skip_path(path: Path) -> bool:
             """Check if file path should be skipped based on ignore patterns."""
+            # Skip based on suffix
+            if any(path.name.endswith(suffix) for suffix in self.ignore_suffixes):
+                return True
+
             relative_parts = path.relative_to(self.repo_path).parts
             
             # Skip if any part of the path starts with a dot (hidden files/folders)

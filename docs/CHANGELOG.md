@@ -3,6 +3,7 @@
 ## 2025-12-29
 
 ### Semantic Search & Qdrant Consistency Fix 🔍
+- **Keyword Fallback for Semantic Seed Strategy** - Added a keyword-based seed discovery to `/semantic-seed-strategy`. If semantic search fails to find relevant nodes (e.g., due to stale embeddings), the strategy now looks for capitalized words in the question and finds matching nodes by name in Memgraph.
 - **Fixed `/semantic-seed-strategy` inconsistency** - Resolved issues where semantic search would fail due to missing collections or path mismatches.
 - **Automatic Collection Creation** - Qdrant collections are now automatically created on-demand during search if they don't exist.
 - **Path Normalization** - Added `.expanduser()` to path resolution to handle `~` in repository paths consistently across ingestion and search.
@@ -10,6 +11,11 @@
 - **Improved Error Resilience** - Added `_ensure_collection_exists()` helper to `vector_store.py` to prevent crashes when searching new repositories.
 
 ### Graph Ingestion & Relationship Fixes 🕸️
+- **Real-time Semantic Updates** - `realtime_updater.py` now updates semantic embeddings in Qdrant for changed files, ensuring that `/semantic-seed-strategy` and other semantic tools stay in sync with code changes without requiring a full database refill.
+- **Event Filtering in Real-time Updater** - `realtime_updater.py` now filters out non-modifying events like `closed_no_write` and ignores binary/media files (images, audio, etc.) as well as database journal files (`.db-journal`, `.sqlite-wal`, etc.) to reduce noise and redundant processing.
+- **Configurable Debouncing** - Added `--debounce` CLI argument to `realtime_updater.py` to allow custom buffering delays (defaults to 20 seconds).
+- **Fixed `realtime_updater.py` Debouncing** - Added 20-second buffering for file changes to prevent race conditions and redundant processing.
+- **Improved Real-time Consistency** - `realtime_updater.py` now re-runs structure identification and definition processing before recalculating function calls, resolving "nodes may not exist" warnings for `CALLS` relationships.
 - **Fixed CALLS relationship failures** - Resolved "nodes may not exist" warnings during ingestion by ensuring consistent repository isolation.
 - **Fixed Unique Constraint Violations** - Resolved `mgclient.DatabaseError: Unable to commit due to unique constraint violation on :Project(name)` in `realtime_updater.py` and MCP server.
 - **Absolute Path Normalization** - Standardized `MemgraphIngestor` to always resolve `repo_path` to an absolute path, ensuring consistent repository isolation.
@@ -18,6 +24,8 @@
 - **Built-in Node Creation** - Added automatic creation of nodes for built-in functions (e.g., `setTimeout`) when they are called.
 
 ### MCP Server Improvements 🔌
+- **Improved Edit Confirmation Prompt** - The post-edit confirmation prompt now explicitly lists the files that were modified, created, or updated, providing better context for the user's decision.
+- **Refined Edit Detection** - Updated `is_edit_operation_request` to use word boundaries, preventing false positives from class names like `ListEditor`.
 - **Fixed `query_codebase` default strategy** - The `query_codebase` MCP tool now correctly uses `semantic-seed-strategy` by default.
 - **Direct Strategy Execution** - Updated MCP server to call `run_semantic_seed_strategy` directly instead of passing slash commands to the agent.
 - **Improved MCP Schema** - Added explicit default value for `strategy` in the MCP tool definition.

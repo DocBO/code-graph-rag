@@ -329,6 +329,7 @@ uv run python -m codebase_rag.main start --repo-path ~/my-project
 - `--host`: Memgraph host (default: `localhost`)
 - `--port`: Memgraph port (default: `7687`)
 - `--batch-size`: Number of buffered nodes/relationships before flushing to Memgraph
+- `--debounce`: Debounce delay in seconds before processing changes (default: 20)
 
 **Specify Custom Models:**
 ```bash

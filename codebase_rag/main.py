@@ -100,7 +100,12 @@ def get_session_context() -> str:
 def is_edit_operation_request(question: str) -> bool:
     """Check if the user's question/request would likely result in edit operations."""
     question_lower = question.lower()
-    return any(keyword in question_lower for keyword in EDIT_REQUEST_KEYWORDS)
+    # Use word boundaries to avoid false positives like "ListEditor" triggering on "edit"
+    for keyword in EDIT_REQUEST_KEYWORDS:
+        pattern = rf"\b{re.escape(keyword)}\b"
+        if re.search(pattern, question_lower):
+            return True
+    return False
 
 
 async def _handle_rejection(
@@ -149,6 +154,53 @@ def is_edit_operation_response(response_text: str) -> bool:
     )
 
     return tool_usage or content_indicators or pattern_match
+
+
+def extract_edit_summary(response_text: str) -> str:
+    """Extract a summary of file modifications from the response text."""
+    modifications = []
+
+    # Pattern 1: (action): file
+    for match in re.finditer(
+        r"(modified|updated|created|edited|writing to):\s*([\w/\\.-]+\.(?:py|js|ts|java|cpp|c|h|go|rs|md|txt|json|yaml|yml))",
+        response_text,
+        re.IGNORE_CASE,
+    ):
+        action = match.group(1).lower()
+        file_path = match.group(2)
+        modifications.append(f"  • [bold cyan]{file_path}[/bold cyan] ({action})")
+
+    # Pattern 2: file (action)
+    for match in re.finditer(
+        r"file\s+([\w/\\.-]+\.(?:py|js|ts|java|cpp|c|h|go|rs|md|txt|json|yaml|yml))\s+(modified|updated|created|edited)",
+        response_text,
+        re.IGNORE_CASE,
+    ):
+        file_path = match.group(1)
+        action = match.group(2).lower()
+        modifications.append(f"  • [bold cyan]{file_path}[/bold cyan] ({action})")
+
+    # Pattern 3: writing to file
+    for match in re.finditer(
+        r"writing\s+to\s+([\w/\\.-]+\.(?:py|js|ts|java|cpp|c|h|go|rs|md|txt|json|yaml|yml))",
+        response_text,
+        re.IGNORE_CASE,
+    ):
+        file_path = match.group(1)
+        modifications.append(f"  • [bold cyan]{file_path}[/bold cyan] (writing)")
+
+    if not modifications:
+        return ""
+
+    # Remove duplicates while preserving order
+    unique_mods = []
+    seen = set()
+    for mod in modifications:
+        if mod not in seen:
+            unique_mods.append(mod)
+            seen.add(mod)
+
+    return "\n".join(unique_mods)
 
 
 def _setup_common_initialization(repo_path: str) -> Path:
@@ -662,10 +714,18 @@ async def run_chat_loop(
 
             # Check if the response actually contains edit operations
             if confirm_edits_globally and is_edit_operation_response(response.output):
+                edit_summary = extract_edit_summary(response.output)
                 console.print(
-                    "\n[bold yellow]⚠️  The assistant has performed file modifications.[/bold yellow]"
+                    "\n[bold yellow]⚠️  The assistant has performed file modifications:[/bold yellow]"
                 )
+                if edit_summary:
+                    console.print(edit_summary)
+                else:
+                    console.print(
+                        "  [italic]Could not extract specific file names, but edits were detected.[/italic]"
+                    )
 
+                console.print()
                 if not Confirm.ask(
                     "[bold cyan]Do you want to keep these changes?[/bold cyan]"
                 ):

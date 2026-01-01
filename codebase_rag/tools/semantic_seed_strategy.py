@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Iterable
@@ -174,12 +175,54 @@ async def run_semantic_seed_strategy(
     if not question.strip():
         return "Please provide a question after `/semantic-seed-strategy`."
 
+    # 1. Semantic Search for seeds
     results = await semantic_code_search_async(
         question, top_k=top_k, repo_path=repo_path
     )
-    if not results:
+    
+    # 2. Keyword Search for additional seeds (fallback/supplement)
+    # Look for capitalized words that might be class/function names
+    potential_keywords = re.findall(r"\b[A-Z][a-zA-Z0-9_]+\b", question)
+    keyword_hits = []
+    if potential_keywords:
+        logger.info(f"Searching for keyword seeds: {potential_keywords}")
+        placeholders = ", ".join(f"${i}" for i in range(len(potential_keywords)))
+        kw_query = f"""
+        MATCH (n)
+        WHERE (n.name IN [{placeholders}] OR n.qualified_name IN [{placeholders}])
+          AND n._repo_path = $repo_path
+        RETURN id(n) AS node_id, n.qualified_name AS qualified_name, 
+               n.name AS name, labels(n) AS type
+        LIMIT 5
+        """
+        kw_params = {str(i): kw for i, kw in enumerate(potential_keywords)}
+        kw_params["repo_path"] = repo_path
+        
+        kw_results = execute_read_query(
+            host=settings.MEMGRAPH_HOST,
+            port=settings.MEMGRAPH_PORT,
+            query=kw_query,
+            params=kw_params
+        )
+        for res in kw_results:
+            keyword_hits.append({
+                "node_id": res["node_id"],
+                "qualified_name": res["qualified_name"],
+                "name": res["name"],
+                "type": res["type"][0] if res["type"] else "Unknown",
+                "score": 1.0  # Exact keyword match gets high score
+            })
+            logger.info(f"  Found keyword seed: {res['name']} ({res['node_id']})")
+
+    # Combine results, avoiding duplicates
+    combined_results = {res["node_id"]: res for res in results}
+    for kw_res in keyword_hits:
+        if kw_res["node_id"] not in combined_results:
+            combined_results[kw_res["node_id"]] = kw_res
+
+    if not combined_results:
         return (
-            f"No semantic matches found for: '{question}'. "
+            f"No semantic or keyword matches found for: '{question}'. "
             "Try a more specific intent query."
         )
 
@@ -191,12 +234,13 @@ async def run_semantic_seed_strategy(
             node_type=hit.get("type") or "Unknown",
             score=float(hit.get("score") or 0.0),
         )
-        for hit in results
+        for hit in combined_results.values()
     ]
     depth = _choose_expansion_depth([hit.score for hit in seed_hits])
     logger.info(
-        "Semantic seed strategy: {} seed hits, chosen depth {}",
+        "Semantic seed strategy: {} seed hits ({} from keywords), chosen depth {}",
         len(seed_hits),
+        len(keyword_hits),
         depth,
     )
 

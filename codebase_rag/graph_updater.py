@@ -347,6 +347,80 @@ class GraphUpdater:
         # Generate embeddings for functions and methods if semantic deps available
         self._generate_semantic_embeddings()
 
+    def update_embeddings_for_files(self, file_paths: list[Path]) -> None:
+        """Update semantic embeddings for functions and methods in specific files."""
+        if not has_semantic_dependencies():
+            return
+
+        try:
+            from .embedder import embed_code_batch
+            from .vector_store import store_embedding
+
+            # Convert paths to relative strings as stored in DB
+            rel_paths = [str(p.relative_to(self.repo_path)) for p in file_paths]
+            
+            # Query database for Function and Method nodes in these files
+            placeholders = ", ".join(f"${i}" for i in range(len(rel_paths)))
+            query = f"""
+            MATCH (m:Module)-[:DEFINES]->(n)
+            WHERE (n:Function OR n:Method) AND m.path IN [{placeholders}] AND n._repo_path = $repo_path
+            RETURN id(n) AS node_id, n.qualified_name AS qualified_name,
+                   n.start_line AS start_line, n.end_line AS end_line,
+                   m.path AS path
+            """
+            
+            params = {str(i): p for i, p in enumerate(rel_paths)}
+            params["repo_path"] = str(self.repo_path)
+
+            results = self.ingestor._execute_query(query, params)
+
+            if not results:
+                logger.debug(f"No functions or methods found for embedding update in {len(file_paths)} files")
+                return
+
+            logger.info(f"Updating embeddings for {len(results)} functions/methods in changed files")
+
+            embeddings_to_process = []
+            source_code_map = {}
+
+            for result in results:
+                node_id = result["node_id"]
+                qualified_name = result["qualified_name"]
+                start_line = result.get("start_line")
+                end_line = result.get("end_line")
+                file_path = result.get("path")
+
+                source_code = self._extract_source_code(
+                    qualified_name, file_path, start_line, end_line
+                )
+
+                if source_code:
+                    embeddings_to_process.append(source_code)
+                    source_code_map[len(embeddings_to_process) - 1] = (node_id, qualified_name)
+
+            if not embeddings_to_process:
+                return
+
+            # Process in batches
+            batch_size = 100
+            for batch_start in range(0, len(embeddings_to_process), batch_size):
+                batch_end = min(batch_start + batch_size, len(embeddings_to_process))
+                batch_codes = embeddings_to_process[batch_start:batch_end]
+
+                try:
+                    batch_embeddings = embed_code_batch(batch_codes, batch_size=batch_size)
+                    for idx, embedding in enumerate(batch_embeddings):
+                        code_idx = batch_start + idx
+                        node_id, qualified_name = source_code_map[code_idx]
+                        store_embedding(node_id, embedding, qualified_name, repo_path=self.repo_path)
+                except Exception as e:
+                    logger.warning(f"Failed to process embedding batch for changed files: {e}")
+
+            logger.info(f"✓ Updated {len(embeddings_to_process)} embeddings for changed files")
+
+        except Exception as e:
+            logger.warning(f"Failed to update semantic embeddings for changed files: {e}")
+
     def remove_file_from_state(self, file_path: Path) -> None:
         """Removes all state associated with a file from the updater's memory."""
         logger.debug(f"Removing in-memory state for: {file_path}")

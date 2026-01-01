@@ -321,6 +321,7 @@ class GraphUpdater:
 
     def run(self) -> None:
         """Orchestrates the parsing and ingestion process."""
+        self.ingestor.ensure_constraints()
         self.ingestor.ensure_node_batch("Project", {"name": self.project_name})
         logger.info(f"Ensuring Project: {self.project_name}")
 
@@ -358,7 +359,7 @@ class GraphUpdater:
 
             # Convert paths to relative strings as stored in DB
             rel_paths = [str(p.relative_to(self.repo_path)) for p in file_paths]
-            
+
             # Query database for Function and Method nodes in these files
             placeholders = ", ".join(f"${i}" for i in range(len(rel_paths)))
             query = f"""
@@ -368,17 +369,21 @@ class GraphUpdater:
                    n.start_line AS start_line, n.end_line AS end_line,
                    m.path AS path
             """
-            
+
             params = {str(i): p for i, p in enumerate(rel_paths)}
             params["repo_path"] = str(self.repo_path)
 
             results = self.ingestor._execute_query(query, params)
 
             if not results:
-                logger.debug(f"No functions or methods found for embedding update in {len(file_paths)} files")
+                logger.debug(
+                    f"No functions or methods found for embedding update in {len(file_paths)} files"
+                )
                 return
 
-            logger.info(f"Updating embeddings for {len(results)} functions/methods in changed files")
+            logger.info(
+                f"Updating embeddings for {len(results)} functions/methods in changed files"
+            )
 
             embeddings_to_process = []
             source_code_map = {}
@@ -396,7 +401,10 @@ class GraphUpdater:
 
                 if source_code:
                     embeddings_to_process.append(source_code)
-                    source_code_map[len(embeddings_to_process) - 1] = (node_id, qualified_name)
+                    source_code_map[len(embeddings_to_process) - 1] = (
+                        node_id,
+                        qualified_name,
+                    )
 
             if not embeddings_to_process:
                 return
@@ -408,18 +416,28 @@ class GraphUpdater:
                 batch_codes = embeddings_to_process[batch_start:batch_end]
 
                 try:
-                    batch_embeddings = embed_code_batch(batch_codes, batch_size=batch_size)
+                    batch_embeddings = embed_code_batch(
+                        batch_codes, batch_size=batch_size
+                    )
                     for idx, embedding in enumerate(batch_embeddings):
                         code_idx = batch_start + idx
                         node_id, qualified_name = source_code_map[code_idx]
-                        store_embedding(node_id, embedding, qualified_name, repo_path=self.repo_path)
+                        store_embedding(
+                            node_id, embedding, qualified_name, repo_path=self.repo_path
+                        )
                 except Exception as e:
-                    logger.warning(f"Failed to process embedding batch for changed files: {e}")
+                    logger.warning(
+                        f"Failed to process embedding batch for changed files: {e}"
+                    )
 
-            logger.info(f"✓ Updated {len(embeddings_to_process)} embeddings for changed files")
+            logger.info(
+                f"✓ Updated {len(embeddings_to_process)} embeddings for changed files"
+            )
 
         except Exception as e:
-            logger.warning(f"Failed to update semantic embeddings for changed files: {e}")
+            logger.warning(
+                f"Failed to update semantic embeddings for changed files: {e}"
+            )
 
     def remove_file_from_state(self, file_path: Path) -> None:
         """Removes all state associated with a file from the updater's memory."""
@@ -535,14 +553,16 @@ class GraphUpdater:
             # Query database for all Function and Method nodes with their source info
             query = """
             MATCH (m:Module)-[:DEFINES]->(n)
-            WHERE n:Function OR n:Method
+            WHERE (n:Function OR n:Method) AND n._repo_path = $repo_path
             RETURN id(n) AS node_id, n.qualified_name AS qualified_name,
                    n.start_line AS start_line, n.end_line AS end_line,
                    m.path AS path
             ORDER BY n.qualified_name
             """
 
-            results = self.ingestor._execute_query(query)
+            results = self.ingestor._execute_query(
+                query, {"repo_path": str(self.repo_path)}
+            )
 
             if not results:
                 logger.info("No functions or methods found for embedding generation")
@@ -610,7 +630,12 @@ class GraphUpdater:
                         node_id, qualified_name = source_code_map[code_idx]
 
                         try:
-                            store_embedding(node_id, embedding, qualified_name, repo_path=self.repo_path)
+                            store_embedding(
+                                node_id,
+                                embedding,
+                                qualified_name,
+                                repo_path=self.repo_path,
+                            )
                             embedded_count += 1
                         except Exception as e:
                             logger.warning(
@@ -671,6 +696,10 @@ class GraphUpdater:
         # Use shared utility with AST-based extraction and line-based fallback
         # Pass repo_path to resolve relative paths to absolute
         return extract_source_with_fallback(
-            file_path_obj, start_line, end_line, qualified_name, ast_extractor,
-            repo_path=self.repo_path
+            file_path_obj,
+            start_line,
+            end_line,
+            qualified_name,
+            ast_extractor,
+            repo_path=self.repo_path,
         )

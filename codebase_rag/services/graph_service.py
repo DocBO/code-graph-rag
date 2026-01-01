@@ -11,19 +11,19 @@ def execute_read_query(
     host: str, port: int, query: str, params: dict[str, Any] | None = None
 ) -> list[dict[str, Any]]:
     """Execute a read-only query without creating a full MemgraphIngestor.
-    
+
     This is useful for tools that just need to read data and don't need
     the full ingestion machinery. Avoids connection pool issues.
-    
+
     Args:
         host: Memgraph host
         port: Memgraph port
         query: Cypher query
         params: Query parameters
-        
+
     Returns:
         List of result dictionaries
-        
+
     Raises:
         Exception: If query execution fails
     """
@@ -33,18 +33,22 @@ def execute_read_query(
         conn = mgclient.connect(host=host, port=port)
         cursor = conn.cursor()
         cursor.execute(query, params or {})
-        
+
         if not cursor.description:
             return []
-        
+
         column_names = [desc.name for desc in cursor.description]
         return [dict(zip(column_names, row)) for row in cursor.fetchall()]
     except Exception as e:
         error_str = str(e).lower()
         if "unexpected" in error_str and ("eof" in error_str or ";" in error_str):
-            logger.error(f"!!! Cypher Syntax Error (likely invalid semicolon or syntax): {e}")
+            logger.error(
+                f"!!! Cypher Syntax Error (likely invalid semicolon or syntax): {e}"
+            )
             logger.error(f"    Query: {query}")
-            logger.error(f"    Hint: Cypher does not use semicolons. Ensure query is valid.")
+            logger.error(
+                f"    Hint: Cypher does not use semicolons. Ensure query is valid."
+            )
         else:
             logger.error(f"Query execution failed: {e}")
             logger.error(f"    Query: {query}")
@@ -59,7 +63,13 @@ def execute_read_query(
 class MemgraphIngestor:
     """Handles all communication and query execution with the Memgraph database."""
 
-    def __init__(self, host: str, port: int, batch_size: int = 1000, repo_path: str | Path | None = None):
+    def __init__(
+        self,
+        host: str,
+        port: int,
+        batch_size: int = 1000,
+        repo_path: str | Path | None = None,
+    ):
         self._host = host
         self._port = port
         if batch_size < 1:
@@ -84,8 +94,9 @@ class MemgraphIngestor:
 
     def __enter__(self) -> "MemgraphIngestor":
         logger.info(f"Connecting to Memgraph at {self._host}:{self._port}...")
-        self.conn = mgclient.connect(host=self._host, port=self._port)
-        self.conn.autocommit = True
+        conn = mgclient.connect(host=self._host, port=self._port)
+        conn.autocommit = True
+        self.conn = conn
         logger.info("Successfully connected to Memgraph.")
         return self
 
@@ -104,10 +115,10 @@ class MemgraphIngestor:
 
     def _get_repo_filter(self, node_var: str = "n") -> str:
         """Get a Cypher WHERE clause filter for the current repo.
-        
+
         Args:
             node_var: The variable name in the Cypher query (default 'n')
-            
+
         Returns:
             A WHERE clause fragment, or empty string if repo_path is "."
             Example: "(n._repo_path = 'path') AND "
@@ -133,13 +144,14 @@ class MemgraphIngestor:
             error_str = str(e).lower()
             # Check for common Cypher syntax errors
             if "unexpected" in error_str and ("eof" in error_str or ";" in error_str):
-                logger.error(f"!!! Cypher Syntax Error (likely invalid semicolon or syntax): {e}")
+                logger.error(
+                    f"!!! Cypher Syntax Error (likely invalid semicolon or syntax): {e}"
+                )
                 logger.error(f"    Query: {query}")
-                logger.error(f"    Hint: Cypher does not use semicolons. Ensure query is valid.")
-            elif (
-                "already exists" not in error_str
-                and "constraint" not in error_str
-            ):
+                logger.error(
+                    f"    Hint: Cypher does not use semicolons. Ensure query is valid."
+                )
+            elif "already exists" not in error_str and "constraint" not in error_str:
                 logger.error(f"!!! Cypher Error: {e}")
                 logger.error(f"    Query: {query}")
                 logger.error(f"    Params: {params}")
@@ -148,18 +160,23 @@ class MemgraphIngestor:
             if cursor:
                 cursor.close()
 
-    def _execute_batch(self, query: str, params_list: list[dict[str, Any]], extra_params: dict[str, Any] | None = None) -> None:
+    def _execute_batch(
+        self,
+        query: str,
+        params_list: list[dict[str, Any]],
+        extra_params: dict[str, Any] | None = None,
+    ) -> None:
         if not self.conn or not params_list:
             return
         cursor = None
         try:
             cursor = self.conn.cursor()
             batch_query = f"UNWIND $batch AS row\n{query}"
-            
+
             full_params = {"batch": params_list}
             if extra_params:
                 full_params.update(extra_params)
-                
+
             cursor.execute(batch_query, full_params)
         except Exception as e:
             if "already exists" not in str(e).lower():
@@ -179,7 +196,10 @@ class MemgraphIngestor:
                 cursor.close()
 
     def _execute_batch_with_return(
-        self, query: str, params_list: list[dict[str, Any]], extra_params: dict[str, Any] | None = None
+        self,
+        query: str,
+        params_list: list[dict[str, Any]],
+        extra_params: dict[str, Any] | None = None,
     ) -> list[dict[str, Any]]:
         """Execute a batch query that returns results."""
         if not self.conn or not params_list:
@@ -188,11 +208,11 @@ class MemgraphIngestor:
         try:
             cursor = self.conn.cursor()
             batch_query = f"UNWIND $batch AS row\n{query}"
-            
+
             full_params = {"batch": params_list}
             if extra_params:
                 full_params.update(extra_params)
-                
+
             cursor.execute(batch_query, full_params)
             if not cursor.description:
                 return []
@@ -217,12 +237,28 @@ class MemgraphIngestor:
     def ensure_constraints(self) -> None:
         logger.info("Ensuring constraints...")
         for label, prop in self.unique_constraints.items():
+            # First, try to drop the old single-property constraint if it exists
             try:
                 self._execute_query(
-                    f"CREATE CONSTRAINT ON (n:{label}) ASSERT n.{prop} IS UNIQUE;"
+                    f"DROP CONSTRAINT ON (n:{label}) ASSERT n.{prop} IS UNIQUE;"
+                )
+                logger.info(
+                    f"Dropped old single-property constraint for {label}({prop})"
                 )
             except Exception:
                 pass
+
+            # Then, create the new composite constraint (property + _repo_path)
+            try:
+                self._execute_query(
+                    f"CREATE CONSTRAINT ON (n:{label}) ASSERT n.{prop}, n._repo_path IS UNIQUE;"
+                )
+            except Exception as e:
+                # If it already exists, that's fine
+                if "already exists" not in str(e).lower():
+                    logger.debug(
+                        f"Note: Constraint for {label} may already exist or error: {e}"
+                    )
         logger.info("Constraints checked/created.")
 
     def ensure_node_batch(self, label: str, properties: dict[str, Any]) -> None:
@@ -344,7 +380,9 @@ class MemgraphIngestor:
                 )
 
             total_attempted += len(params_list)
-            results = self._execute_batch_with_return(query, params_list, {"repo_path": self.repo_path})
+            results = self._execute_batch_with_return(
+                query, params_list, {"repo_path": self.repo_path}
+            )
             batch_successful = (
                 sum(r.get("created", 0) for r in results) if results else 0
             )
@@ -402,7 +440,9 @@ class MemgraphIngestor:
         WHERE a._repo_path = $repo_path AND b._repo_path = $repo_path
         RETURN id(a) as from_id, id(b) as to_id, type(r) as type, properties(r) as properties
         """
-        relationships_data = self.fetch_all(relationships_query, {"repo_path": self.repo_path})
+        relationships_data = self.fetch_all(
+            relationships_query, {"repo_path": self.repo_path}
+        )
 
         graph_data = {
             "nodes": nodes_data,

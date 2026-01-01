@@ -23,13 +23,13 @@ def _use_remote_qdrant() -> bool:
 
 def get_collection_name(repo_path: str | Path | None = None) -> str:
     """Generate a repository-specific collection name.
-    
+
     Uses the repo path to create a unique collection name so multiple
     repositories can have their own vector collections in the same Qdrant instance.
     """
     if repo_path is None:
         repo_path = settings.TARGET_REPO_PATH or "."
-    
+
     repo_path = str(Path(repo_path).expanduser().resolve())
     # Create a hash of the repo path to keep collection names reasonable length
     path_hash = hashlib.md5(repo_path.encode()).hexdigest()[:8]
@@ -38,16 +38,16 @@ def get_collection_name(repo_path: str | Path | None = None) -> str:
 
 def get_stable_point_id(qualified_name: str) -> int:
     """Generate a stable point ID from qualified name only.
-    
+
     This ensures that the same function always gets the same Qdrant point ID,
     regardless of its location in the file (line numbers). This way:
     - When a function moves to a different location, its vector gets updated (upsert)
     - When a function is renamed, it gets a new ID (new vector)
     - Memgraph and Qdrant stay synchronized on identity
-    
+
     Args:
         qualified_name: The qualified name (e.g., "module.ClassName.method_name")
-        
+
     Returns:
         Integer ID suitable for Qdrant point IDs
     """
@@ -100,10 +100,13 @@ if has_qdrant_client():
             )
 
     def store_embedding(
-        node_id: int, embedding: list[float], qualified_name: str, repo_path: str | Path | None = None
+        node_id: int,
+        embedding: list[float],
+        qualified_name: str,
+        repo_path: str | Path | None = None,
     ) -> None:
         """Store code embedding in Qdrant vector database.
-        
+
         Uses qualified_name as stable point ID so that:
         - Function moves update the vector (same ID)
         - Function renames create new vector (different ID)
@@ -113,7 +116,7 @@ if has_qdrant_client():
             client = get_qdrant_client()
             collection_name = get_collection_name(repo_path)
             _ensure_collection_exists(client, collection_name)
-            
+
             stable_point_id = get_stable_point_id(qualified_name)
             client.upsert(
                 collection_name=collection_name,
@@ -130,14 +133,16 @@ if has_qdrant_client():
             raise
 
     def search_embeddings(
-        query_embedding: list[float], top_k: int = 5, repo_path: str | Path | None = None
+        query_embedding: list[float],
+        top_k: int = 5,
+        repo_path: str | Path | None = None,
     ) -> list[tuple[int, float]]:
         """Search for similar code embeddings."""
         try:
             client = get_qdrant_client()
             collection_name = get_collection_name(repo_path)
             _ensure_collection_exists(client, collection_name)
-            
+
             hits = client.search(
                 collection_name=collection_name,
                 query_vector=query_embedding,
@@ -150,7 +155,7 @@ if has_qdrant_client():
 
     def clean_collection(repo_path: str | Path | None = None) -> None:
         """Delete all vectors from a Qdrant collection.
-        
+
         Args:
             repo_path: Repository path to identify collection. Uses TARGET_REPO_PATH if None.
         """
@@ -215,10 +220,13 @@ elif _use_remote_qdrant():
             logger.warning(f"Failed to ensure Qdrant collection exists: {e}")
 
     def store_embedding(
-        node_id: int, embedding: list[float], qualified_name: str, repo_path: str | Path | None = None
+        node_id: int,
+        embedding: list[float],
+        qualified_name: str,
+        repo_path: str | Path | None = None,
     ) -> None:
         """Store code embedding in remote Qdrant via HTTP.
-        
+
         Uses qualified_name as stable point ID so that:
         - Function moves update the vector (same ID)
         - Function renames create new vector (different ID)
@@ -255,7 +263,9 @@ elif _use_remote_qdrant():
             raise
 
     def search_embeddings(
-        query_embedding: list[float], top_k: int = 5, repo_path: str | Path | None = None
+        query_embedding: list[float],
+        top_k: int = 5,
+        repo_path: str | Path | None = None,
     ) -> list[tuple[int, float]]:
         """Search for similar code embeddings via HTTP."""
         try:
@@ -283,27 +293,27 @@ elif _use_remote_qdrant():
 
     def clean_collection(repo_path: str | Path | None = None) -> None:
         """Delete all vectors from a Qdrant collection via HTTP.
-        
+
         Args:
             repo_path: Repository path to identify collection. Uses TARGET_REPO_PATH if None.
         """
         try:
             collection_name = _get_collection_name(repo_path)
             logger.info(f"Cleaning Qdrant collection via HTTP: {collection_name}")
-            
+
             headers = {"Content-Type": "application/json"}
             if settings.QDRANT_API_KEY:
                 headers["api-key"] = settings.QDRANT_API_KEY
-            
+
             # Delete all points using points selector with empty list
             url = _build_qdrant_url(f"/collections/{collection_name}/points/delete")
             payload = {"points": []}  # Empty list means match all/truncate
-            
+
             resp = httpx.post(url, json=payload, headers=headers, timeout=10.0)
             if resp.status_code >= 400:
                 logger.warning(f"Failed to clean Qdrant collection: {resp.text}")
                 raise VectorStoreError(f"Failed to clean collection: {resp.text}")
-            
+
             logger.info(f"Qdrant collection cleaned via HTTP: {collection_name}")
         except Exception as e:
             logger.warning(f"Failed to clean Qdrant collection: {e}")
@@ -317,15 +327,19 @@ else:
         )
 
     def store_embedding(
-        node_id: int, embedding: list[float], qualified_name: str
+        node_id: int,
+        embedding: list[float],
+        qualified_name: str,
+        repo_path: str | Path | None = None,
     ) -> None:
         raise VectorStoreError("Qdrant client not available. Cannot store embeddings.")
 
     def search_embeddings(
-        query_embedding: list[float], top_k: int = 5
+        query_embedding: list[float],
+        top_k: int = 5,
+        repo_path: str | Path | None = None,
     ) -> list[tuple[int, float]]:
         return []
 
     def clean_collection(repo_path: str | Path | None = None) -> None:
         raise VectorStoreError("Qdrant client not available. Cannot clean collections.")
-

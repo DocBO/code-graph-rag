@@ -11,6 +11,7 @@
 - **Improved Error Resilience** - Added `_ensure_collection_exists()` helper to `vector_store.py` to prevent crashes when searching new repositories.
 
 ### Graph Ingestion & Relationship Fixes 🕸️
+- **Dotfile and Dotfolder Exclusion** - Updated `realtime_updater.py`, `graph_updater.py`, and `structure_processor.py` to ignore any files or directories starting with a dot (e.g., `.git`, `.vscode`, `.gitignore.swp`). This prevents noise from hidden files and temporary editor files from triggering unnecessary graph updates.
 - **Real-time Semantic Updates** - `realtime_updater.py` now updates semantic embeddings in Qdrant for changed files, ensuring that `/semantic-seed-strategy` and other semantic tools stay in sync with code changes without requiring a full database refill.
 - **Event Filtering in Real-time Updater** - `realtime_updater.py` now filters out non-modifying events like `closed_no_write` and ignores binary/media files (images, audio, etc.) as well as database journal files (`.db-journal`, `.sqlite-wal`, etc.) to reduce noise and redundant processing.
 - **Configurable Debouncing** - Added `--debounce` CLI argument to `realtime_updater.py` to allow custom buffering delays (defaults to 20 seconds).

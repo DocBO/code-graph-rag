@@ -32,6 +32,16 @@ class CodeChangeEventHandler(FileSystemEventHandler):
     def _is_relevant(self, path_str: str) -> bool:
         """Check if the file path is relevant for processing."""
         path = Path(path_str)
+
+        # Ignore files and folders starting with a dot (hidden files/folders)
+        # We check all parts of the path relative to the repo root
+        try:
+            relative_path = path.relative_to(self.updater.repo_path)
+            if any(part.startswith(".") for part in relative_path.parts):
+                return False
+        except ValueError:
+            # If path is not relative to repo_path, it's definitely not relevant
+            return False
         
         # Ignore common binary and media extensions
         ignored_extensions = {

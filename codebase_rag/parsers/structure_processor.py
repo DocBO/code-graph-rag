@@ -31,6 +31,9 @@ class StructureProcessor:
 
         def should_skip_dir(path: Path) -> bool:
             """Check if directory should be skipped based on ignore patterns."""
+            # Skip if any part of the path starts with a dot (hidden files/folders)
+            if any(part.startswith(".") for part in path.parts):
+                return True
             return any(part in self.ignore_dirs for part in path.parts)
 
         # Get all directories using pathlib, which is more efficient than os.walk

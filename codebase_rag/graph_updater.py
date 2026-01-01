@@ -486,9 +486,15 @@ class GraphUpdater:
 
         def should_skip_path(path: Path) -> bool:
             """Check if file path should be skipped based on ignore patterns."""
+            relative_parts = path.relative_to(self.repo_path).parts
+            
+            # Skip if any part of the path starts with a dot (hidden files/folders)
+            if any(part.startswith(".") for part in relative_parts):
+                return True
+
             return any(
                 part in self.ignore_dirs
-                for part in path.relative_to(self.repo_path).parts
+                for part in relative_parts
             )
 
         # Use pathlib.rglob for more efficient file iteration

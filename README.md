@@ -304,6 +304,20 @@ uv run python realtime_updater.py /path/to/your/repo
 make watch REPO_PATH=/path/to/your/repo
 ```
 
+**Unified Startup (MCP Server + Real-Time Watcher):**
+```bash
+# Start both MCP server and real-time updater with a single command
+uv run python start_mcp_with_watcher.py ~/my-project
+
+# With custom Memgraph and debounce settings
+uv run python start_mcp_with_watcher.py ~/my-project --debounce 30 --batch-size 1000
+
+# With HTTP transport for the MCP server
+uv run python start_mcp_with_watcher.py ~/my-project --transport http --mcp-port 8765
+```
+
+This unified approach automatically manages both services with proper synchronization and cleanup.
+
 **With custom Memgraph settings:**
 ```bash
 # Python
@@ -313,13 +327,15 @@ uv run python realtime_updater.py /path/to/your/repo --host localhost --port 768
 make watch REPO_PATH=/path/to/your/repo HOST=localhost PORT=7687 BATCH_SIZE=1000
 ```
 
-**Multi-terminal workflow:**
+**Multi-terminal workflow (manual approach):**
 ```bash
 # Terminal 1: Start the realtime updater
 uv run python realtime_updater.py ~/my-project
 
-# Terminal 2: Run the AI assistant
+# Terminal 2: Run the AI assistant or MCP server
 uv run python -m codebase_rag.main start --repo-path ~/my-project
+# or
+uv run python -m codebase_rag.main mcp --repo-path ~/my-project
 ```
 
 **Performance note:** The updater currently recalculates all CALLS relationships on every file change to ensure consistency. This prevents "island" problems where changes in one file aren't reflected in relationships from other files, but may impact performance on very large codebases with frequent changes. **Note:** Optimization of this behavior is a work in progress.
@@ -421,27 +437,30 @@ This provides a reliable, programmatic way to access your codebase structure wit
 
 ## 🤝 MCP Server Mode
 
-Graph-Code can expose its capabilities to any MCP-compatible agent (Codex CLI, Claude Code, etc.) via a built-in server:
+Graph-Code can expose its capabilities to any MCP-compatible agent (Codex CLI, Claude Code, etc.) via a built-in server with real-time synchronization:
 
+**Unified startup (recommended):**
+```bash
+# Start MCP server + real-time updater with a single command
+uv run python start_mcp_with_watcher.py ~/path/to/repo --batch-size 2000
+```
+
+**Manual startup (individual components):**
 ```bash
 uv run python -m codebase_rag.main mcp \
   --repo-path /path/to/repo \
   --batch-size 2000
 ```
 
-The server shares the same provider configuration as the CLI (`.env`, `--orchestrator`, `--cypher`) and offers four tools:
-- `graph_ingest`: Parse the repository and refresh Memgraph (accepts `repo_path`, `clean`, `batch_size`).
-- `graph_query`: Translate natural-language questions into Cypher and return the results.
-- `optimize_code`: Trigger a single optimization prompt for a given language and optional reference document.
+The server shares the same provider configuration as the CLI (`.env`, `--orchestrator`, `--cypher`) and offers three tools:
+- `query_codebase`: Translate natural-language questions into Cypher and return the results.
 - `get_status`: Report repo path, Memgraph host/port, and the active model providers.
-- `ingest_status`: Report the last ingest timestamp and how many files have changed since then so you know when to re-run ingestion.
+- `ingest_status`: Report the last ingest timestamp and how many files have changed since then.
 
 Want a network endpoint instead of stdio? Use the Streamable HTTP transport (SSE/JSON):
 
 ```bash
-uv run python -m codebase_rag.main mcp \
-  --transport http --host 127.0.0.1 --port 8765 --path /mcp \
-  --repo-path /path/to/repo --batch-size 2000
+uv run python start_mcp_with_watcher.py /path/to/repo --transport http --mcp-port 8765
 ```
 
 Your MCP client should then point to `http://127.0.0.1:8765/mcp` when configuring the server command/endpoint.

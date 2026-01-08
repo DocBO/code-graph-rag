@@ -4,22 +4,7 @@ The Graph-Code MCP (Model Context Protocol) server exposes the following tools f
 
 ## Available Tools
 
-### 1. `graph_ingest`
-**Title:** Update Knowledge Graph  
-**Description:** Parse a repository with Tree-sitter and refresh the Memgraph knowledge graph.  
-
-**Parameters:**
-- `repo_path` (string, optional): Repository path to ingest.
-- `clean` (boolean, default: false): Drop existing nodes/relationships before ingest.
-- `batch_size` (integer, optional): Memgraph batch size override.
-
-**Returns:**
-- `repo_path`, `cleaned`, `batch_size`, `duration_ms`
-
-**Example:** Ingest current repo with clean slate.
-
-
-### 2. `query_codebase`
+### 1. `query_codebase`
 **Title:** Query Codebase (RAG)  
 **Description:** Query the codebase using natural language with configurable RAG strategy. `semantic-seed-strategy` is the standard default, using semantic search to seed graph traversal and synthesis.  
 
@@ -33,7 +18,7 @@ The Graph-Code MCP (Model Context Protocol) server exposes the following tools f
 **Example:** \"How does user authentication work?\" (uses semantic-seed-strategy by default)
 
 
-### 3. `get_status`
+### 2. `get_status`
 **Title:** Get Server Status  
 **Description:** Current configuration (repo, Memgraph, providers).  
 
@@ -42,7 +27,7 @@ The Graph-Code MCP (Model Context Protocol) server exposes the following tools f
 **Returns:**
 - `repo_path`, `batch_size`, `memgraph`, `orchestrator`, `cypher`
 
-### 4. `ingest_status`
+### 3. `ingest_status`
 **Title:** Ingest Status  
 **Description:** Last ingest time and changes since then.  
 
@@ -52,10 +37,37 @@ The Graph-Code MCP (Model Context Protocol) server exposes the following tools f
 **Returns:**
 - `repo_path`, `last_ingest`, `changes` (added/deleted/modified/total), `metadata_path`
 
-## Usage
+## Startup
 
-- **Stdio:** `python -m codebase_rag.mcp.server --repo-path /path/to/repo`
-- **HTTP:** Supports Streamable HTTP (SSE) at configurable host/port/path.
+Use the unified startup script to launch both the MCP server and real-time watcher:
+
+```bash
+# Start MCP server + real-time updater for a repository
+uv run python start_mcp_with_watcher.py ~/path/to/repo
+
+# With custom Memgraph settings
+uv run python start_mcp_with_watcher.py ~/path/to/repo --host localhost --port 7687 --batch-size 1000
+
+# With custom debounce delay for real-time updates
+uv run python start_mcp_with_watcher.py ~/path/to/repo --debounce 30
+```
+
+The script automatically:
+1. Starts the MCP server on stdio (default) or HTTP (with `--transport http`)
+2. Launches the real-time updater in the background
+3. Keeps both services synchronized
+
+**Advanced options:**
+- `--transport http`: Use HTTP transport instead of stdio (requires `--host`, `--port`, `--path`)
+- `--host`: HTTP server host (default: `127.0.0.1`)
+- `--port`: HTTP server port (default: `8765`)
+- `--path`: HTTP endpoint path (default: `/mcp`)
+- `--batch-size`: Memgraph batch size (default: from settings)
+- `--debounce`: Real-time updater debounce delay in seconds (default: `20`)
+
+For manual startup of individual components:
+- **MCP Server only:** `uv run python -m codebase_rag.main mcp --repo-path /path/to/repo`
+- **Real-time updater only:** `uv run python realtime_updater.py /path/to/repo`
 
 See [`codebase_rag/mcp/server.py`](codebase_rag/mcp/server.py) for implementation details.
 

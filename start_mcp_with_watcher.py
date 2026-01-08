@@ -144,10 +144,23 @@ Examples:
     try:
         updater_process = subprocess.Popen(
             updater_cmd,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,  # Line buffering
         )
         print(f"✓ Real-time updater started (PID: {updater_process.pid})")
+        
+        # Start a thread to capture and display updater logs
+        def _capture_updater_logs():
+            """Capture logs from the background updater process."""
+            if updater_process.stdout:
+                for line in updater_process.stdout:
+                    print(f"  [updater] {line.rstrip()}")
+        
+        import threading
+        log_thread = threading.Thread(target=_capture_updater_logs, daemon=True)
+        log_thread.start()
     except Exception as e:
         print(f"⚠️  Failed to start real-time updater: {e}", file=sys.stderr)
         updater_process = None
@@ -175,9 +188,9 @@ Examples:
         mcp_cmd.extend([
             "--transport",
             "http",
-            "--mcp-host",
+            "--host",
             args.mcp_host,
-            "--mcp-port",
+            "--port",
             str(args.mcp_port),
             "--path",
             args.path,

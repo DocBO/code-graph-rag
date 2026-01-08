@@ -74,7 +74,9 @@ class CodeChangeEventHandler(FileSystemEventHandler):
         if not self.pending_changes:
             return
 
-        logger.info(f"Processing {len(self.pending_changes)} pending file changes after debounce.")
+        start_time = time.time()
+        num_files = len(self.pending_changes)
+        logger.info(f"🔄 Starting graph update for {num_files} file(s)...")
 
         # Process each changed file: delete old data and re-parse
         for path_str in self.pending_changes:
@@ -142,14 +144,13 @@ class CodeChangeEventHandler(FileSystemEventHandler):
         # Flush all changes
         self.updater.ingestor.flush_all()
         
-        # --- Step 6: Update semantic embeddings for changed files ---
-        # This ensures that /semantic-seed-strategy and other semantic tools
-        # stay in sync with the latest code changes.
-        logger.info("Updating semantic embeddings for changed files...")
+        # Update semantic embeddings for changed files
+        logger.info("  Updating semantic embeddings...")
         changed_paths = [Path(p) for p in self.pending_changes]
         self.updater.update_embeddings_for_files(changed_paths)
         
-        logger.success(f"Graph updated successfully for {len(self.pending_changes)} file changes.")
+        elapsed = time.time() - start_time
+        logger.success(f"✓ Graph update completed in {elapsed:.2f}s for {num_files} file(s).")
 
         # Clear pending changes
         self.pending_changes.clear()

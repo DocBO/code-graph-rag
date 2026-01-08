@@ -56,27 +56,6 @@ def _build_tool_schema(name: str) -> dict[str, Any]:
     """Return JSON schema definitions for supported tools."""
 
     match name:
-        case "graph_ingest":
-            return {
-                "type": "object",
-                "properties": {
-                    "repo_path": {
-                        "type": "string",
-                        "description": "Optional override for the repository path to ingest.",
-                    },
-                    "clean": {
-                        "type": "boolean",
-                        "description": "Drop existing nodes and relationships before ingesting.",
-                        "default": False,
-                    },
-                    "batch_size": {
-                        "type": "integer",
-                        "minimum": 1,
-                        "description": "Override Memgraph batch size for this operation.",
-                    },
-                },
-                "additionalProperties": False,
-            }
         case "graph_query":
             return {
                 "type": "object",
@@ -175,45 +154,6 @@ class GraphCodeMCPContext:
         if override is not None and override >= 1:
             return override
         return self.batch_size
-
-    async def run_ingest(
-        self,
-        repo_path: str | None = None,
-        clean: bool = False,
-        batch_size: int | None = None,
-    ) -> dict[str, Any]:
-        """Update the knowledge graph for the requested repository."""
-
-        target_repo = self._resolve_repo(repo_path)
-        effective_batch = self._resolve_batch_size(batch_size)
-        parsers, queries = self._ensure_parsers()
-
-        def _task() -> dict[str, Any]:
-            start = time.perf_counter()
-            with MemgraphIngestor(
-                host=settings.MEMGRAPH_HOST,
-                port=settings.MEMGRAPH_PORT,
-                batch_size=effective_batch,
-                repo_path=target_repo,
-            ) as ingestor:
-                ingestor.ensure_constraints()
-                if clean:
-                    ingestor.clean_database()
-
-                updater = GraphUpdater(ingestor, target_repo, parsers, queries)
-                updater.run()
-                # Persist ingest metadata when successful
-                write_ingest_metadata(target_repo)
-
-            duration_ms = (time.perf_counter() - start) * 1000
-            return {
-                "repo_path": str(target_repo),
-                "cleaned": clean,
-                "batch_size": effective_batch,
-                "duration_ms": duration_ms,
-            }
-
-        return await anyio.to_thread.run_sync(_task)
 
     async def run_query(self, question: str) -> dict[str, Any]:
         """Translate NL question into Cypher and fetch results."""
@@ -379,22 +319,6 @@ class GraphCodeMCPServer:
     def _build_tool_definitions(self) -> list[types.Tool]:
         return [
             types.Tool(
-                name="graph_ingest",
-                title="Update Knowledge Graph",
-                description="Parse a repository with Tree-sitter and refresh the Memgraph knowledge graph.",
-                inputSchema=_build_tool_schema("graph_ingest"),
-                outputSchema={
-                    "type": "object",
-                    "properties": {
-                        "repo_path": {"type": "string"},
-                        "cleaned": {"type": "boolean"},
-                        "batch_size": {"type": "integer"},
-                        "duration_ms": {"type": "number"},
-                    },
-                    "required": ["repo_path", "cleaned", "batch_size", "duration_ms"],
-                },
-            ),
-            types.Tool(
                 name="graph_query",
                 title="Query Knowledge Graph",
                 description="Translate natural-language questions into Cypher and return query results.",
@@ -503,16 +427,6 @@ class GraphCodeMCPServer:
         args = arguments or {}
 
         try:
-            if tool_name == "graph_ingest":
-                result = await self.context.run_ingest(
-                    repo_path=args.get("repo_path"),
-                    clean=bool(args.get("clean", False)),
-                    batch_size=args.get("batch_size"),
-                )
-                return self._format_response(
-                    result,
-                    f"Updated graph for {result['repo_path']} (clean={result['cleaned']}).",
-                )
             if tool_name == "graph_query":
                 question = args.get("question", "")
                 result = await self.context.run_query(question)

@@ -38,7 +38,14 @@ def execute_read_query(
             return []
 
         column_names = [desc.name for desc in cursor.description]
-        return [dict(zip(column_names, row)) for row in cursor.fetchall()]
+        # Use fetchone() in a loop to avoid loading entire result set into memory
+        results = []
+        while True:
+            row = cursor.fetchone()
+            if row is None:
+                break
+            results.append(dict(zip(column_names, row)))
+        return results
     except Exception as e:
         error_str = str(e).lower()
         if "unexpected" in error_str and ("eof" in error_str or ";" in error_str):
@@ -103,15 +110,53 @@ class MemgraphIngestor:
     def __exit__(
         self, exc_type: type | None, exc_val: Exception | None, exc_tb: Any
     ) -> None:
+        import sys
+        import threading
+        import time
+        
+        logger.info("__exit__() CALLED - context manager exit")
+        sys.stdout.flush()
+        sys.stderr.flush()
+        
         if exc_type:
             logger.error(
                 f"An exception occurred: {exc_val}. Flushing remaining items...",
                 exc_info=True,
             )
+        logger.info("__exit__() - calling flush_all()")
+        sys.stdout.flush()
+        sys.stderr.flush()
+        
         self.flush_all()
+        
+        logger.info("__exit__() - flush_all() returned")
+        sys.stdout.flush()
+        sys.stderr.flush()
+        
         if self.conn:
-            self.conn.close()
-            logger.info("\nDisconnected from Memgraph.")
+            logger.info("__exit__() - closing connection")
+            sys.stdout.flush()
+            sys.stderr.flush()
+            
+            # Close the connection with a timeout to prevent hanging
+            # on large repositories where Memgraph might be slow to finalize
+            def close_connection():
+                try:
+                    self.conn.close()
+                except Exception as e:
+                    logger.warning(f"Error closing connection: {e}")
+            
+            close_thread = threading.Thread(target=close_connection, daemon=True)
+            close_thread.start()
+            close_thread.join(timeout=5.0)  # Wait max 5 seconds
+            
+            if close_thread.is_alive():
+                logger.warning("Connection close timed out after 5 seconds - abandoning connection")
+            else:
+                logger.info("Disconnected from Memgraph.")
+            
+            sys.stdout.flush()
+            sys.stderr.flush()
 
     def _get_repo_filter(self, node_var: str = "n") -> str:
         """Get a Cypher WHERE clause filter for the current repo.
@@ -135,11 +180,25 @@ class MemgraphIngestor:
         cursor = None
         try:
             cursor = self.conn.cursor()
+            logger.debug(f"Executing query: {query[:100]}... with params: {params}")
             cursor.execute(query, params)
             if not cursor.description:
                 return []
             column_names = [desc.name for desc in cursor.description]
-            return [dict(zip(column_names, row)) for row in cursor.fetchall()]
+            # Use fetchone() in a loop to avoid loading entire result set into memory
+            logger.debug("Fetching results from cursor...")
+            results = []
+            row_count = 0
+            while True:
+                row = cursor.fetchone()
+                if row is None:
+                    break
+                results.append(dict(zip(column_names, row)))
+                row_count += 1
+                if row_count % 1000 == 0:
+                    logger.debug(f"  Fetched {row_count} rows so far...")
+            logger.debug(f"Query completed. Total results: {len(results)}")
+            return results
         except Exception as e:
             error_str = str(e).lower()
             # Check for common Cypher syntax errors
@@ -213,11 +272,20 @@ class MemgraphIngestor:
             if extra_params:
                 full_params.update(extra_params)
 
+            logger.debug(f"Executing batch query with {len(params_list)} items...")
             cursor.execute(batch_query, full_params)
             if not cursor.description:
                 return []
             column_names = [desc.name for desc in cursor.description]
-            return [dict(zip(column_names, row)) for row in cursor.fetchall()]
+            # Use fetchone() in a loop to avoid loading entire result set into memory
+            results = []
+            while True:
+                row = cursor.fetchone()
+                if row is None:
+                    break
+                results.append(dict(zip(column_names, row)))
+            logger.debug(f"Batch query returned {len(results)} results")
+            return results
         except Exception as e:
             logger.error(f"!!! Batch Cypher Error: {e}")
             logger.error(f"    Query: {query}")
@@ -352,9 +420,19 @@ class MemgraphIngestor:
         self.node_buffer.clear()
 
     def flush_relationships(self) -> None:
+        import sys
+        logger.info("flush_relationships() ENTRY")
+        sys.stdout.flush()
+        sys.stderr.flush()
+        
         if not self.relationship_buffer:
+            logger.debug("No buffered relationships to flush")
             return
 
+        logger.info(f"  Processing {len(self.relationship_buffer)} buffered relationships...")
+        sys.stdout.flush()
+        sys.stderr.flush()
+        
         rels_by_pattern = defaultdict(list)
         for from_node, rel_type, to_node, props in self.relationship_buffer:
             pattern = (from_node[0], from_node[1], rel_type, to_node[0], to_node[1])
@@ -362,11 +440,17 @@ class MemgraphIngestor:
                 {"from_val": from_node[2], "to_val": to_node[2], "props": props or {}}
             )
 
+        logger.info(f"  Grouped into {len(rels_by_pattern)} patterns")
+        sys.stdout.flush()
+        sys.stderr.flush()
+        
         total_attempted = 0
         total_successful = 0
 
-        for pattern, params_list in rels_by_pattern.items():
+        for pattern_idx, (pattern, params_list) in enumerate(rels_by_pattern.items()):
             from_label, from_key, rel_type, to_label, to_key = pattern
+            logger.debug(f"    Pattern {pattern_idx + 1}/{len(rels_by_pattern)}: {rel_type} with {len(params_list)} items")
+            
             query = (
                 f"MATCH (a:{from_label} {{{from_key}: row.from_val, _repo_path: $repo_path}}), "
                 f"(b:{to_label} {{{to_key}: row.to_val, _repo_path: $repo_path}})\n"
@@ -380,9 +464,17 @@ class MemgraphIngestor:
                 )
 
             total_attempted += len(params_list)
+            logger.debug(f"      Executing batch...")
+            sys.stdout.flush()
+            sys.stderr.flush()
+            
             results = self._execute_batch_with_return(
                 query, params_list, {"repo_path": self.repo_path}
             )
+            
+            sys.stdout.flush()
+            sys.stderr.flush()
+            logger.debug(f"      Batch returned {len(results) if results else 0} results")
             batch_successful = (
                 sum(r.get("created", 0) for r in results) if results else 0
             )
@@ -404,13 +496,50 @@ class MemgraphIngestor:
         logger.info(
             f"Flushed {len(self.relationship_buffer)} relationships ({total_successful} successful, {total_attempted - total_successful} failed)."
         )
+        sys.stdout.flush()
+        sys.stderr.flush()
+        
+        logger.info("  About to clear relationship buffer...")
+        sys.stdout.flush()
+        sys.stderr.flush()
         self.relationship_buffer.clear()
+        logger.info("  ✓ Relationship buffer cleared")
+        sys.stdout.flush()
+        sys.stderr.flush()
+        
+        logger.info("flush_relationships() EXIT")
+        sys.stdout.flush()
+        sys.stderr.flush()
 
     def flush_all(self) -> None:
+        import sys
         logger.info("--- Flushing all pending writes to database... ---")
+        logger.info(f"    Buffered nodes: {len(self.node_buffer)}")
+        logger.info(f"    Buffered relationships: {len(self.relationship_buffer)}")
+        sys.stdout.flush()
+        sys.stderr.flush()
+        
+        logger.info("  Flushing nodes...")
         self.flush_nodes()
+        logger.info("  ✓ Nodes flushed")
+        sys.stdout.flush()
+        sys.stderr.flush()
+        
+        logger.info("  [PRE] About to call flush_relationships()...")
+        sys.stdout.flush()
+        sys.stderr.flush()
         self.flush_relationships()
+        logger.info("  [POST] flush_relationships() returned successfully")
+        sys.stdout.flush()
+        sys.stderr.flush()
+        
         logger.info("--- Flushing complete. ---")
+        sys.stdout.flush()
+        sys.stderr.flush()
+        
+        logger.info("✓ flush_all() exiting successfully")
+        sys.stdout.flush()
+        sys.stderr.flush()
 
     def fetch_all(self, query: str, params: dict[str, Any] | None = None) -> list:
         """Executes a query and fetches all results."""

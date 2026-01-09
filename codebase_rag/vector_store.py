@@ -112,24 +112,40 @@ if has_qdrant_client():
         - Function renames create new vector (different ID)
         - Qdrant stays synchronized with Memgraph's qualified_name identity
         """
+        batch_store_embeddings([(node_id, embedding, qualified_name)], repo_path)
+
+    def batch_store_embeddings(
+        embeddings_data: list[tuple[int, list[float], str]],
+        repo_path: str | Path | None = None,
+    ) -> None:
+        """Store multiple code embeddings in Qdrant in a single batch."""
+        if not embeddings_data:
+            return
+
         try:
             client = get_qdrant_client()
             collection_name = get_collection_name(repo_path)
             _ensure_collection_exists(client, collection_name)
 
-            stable_point_id = get_stable_point_id(qualified_name)
-            client.upsert(
-                collection_name=collection_name,
-                points=[
+            points = []
+            for node_id, embedding, qualified_name in embeddings_data:
+                stable_point_id = get_stable_point_id(qualified_name)
+                points.append(
                     PointStruct(
                         id=stable_point_id,
                         vector=embedding,
                         payload={"node_id": node_id, "qualified_name": qualified_name},
                     )
-                ],
+                )
+
+            client.upsert(
+                collection_name=collection_name,
+                points=points,
             )
         except Exception as e:
-            logger.warning(f"Failed to store embedding for {qualified_name}: {e}")
+            logger.warning(
+                f"Failed to store batch of {len(embeddings_data)} embeddings: {e}"
+            )
             raise
 
     def search_embeddings(
@@ -232,6 +248,16 @@ elif _use_remote_qdrant():
         - Function renames create new vector (different ID)
         - Qdrant stays synchronized with Memgraph's qualified_name identity
         """
+        batch_store_embeddings([(node_id, embedding, qualified_name)], repo_path)
+
+    def batch_store_embeddings(
+        embeddings_data: list[tuple[int, list[float], str]],
+        repo_path: str | Path | None = None,
+    ) -> None:
+        """Store multiple code embeddings in remote Qdrant via HTTP in a single batch."""
+        if not embeddings_data:
+            return
+
         try:
             collection_name = _get_collection_name(repo_path)
             _ensure_collection_exists(collection_name)
@@ -240,10 +266,10 @@ elif _use_remote_qdrant():
             if settings.QDRANT_API_KEY:
                 headers["api-key"] = settings.QDRANT_API_KEY
 
-            stable_point_id = get_stable_point_id(qualified_name)
-            url = _build_qdrant_url(f"/collections/{collection_name}/points")
-            payload = {
-                "points": [
+            points = []
+            for node_id, embedding, qualified_name in embeddings_data:
+                stable_point_id = get_stable_point_id(qualified_name)
+                points.append(
                     {
                         "id": stable_point_id,
                         "vector": embedding,
@@ -252,14 +278,18 @@ elif _use_remote_qdrant():
                             "qualified_name": qualified_name,
                         },
                     }
-                ]
-            }
+                )
 
-            resp = httpx.put(url, json=payload, headers=headers, timeout=10.0)
+            url = _build_qdrant_url(f"/collections/{collection_name}/points")
+            payload = {"points": points}
+
+            resp = httpx.put(url, json=payload, headers=headers, timeout=30.0)
             if resp.status_code >= 400:
-                logger.warning(f"Failed to store embedding via HTTP: {resp.text}")
+                logger.warning(f"Failed to store batch embeddings via HTTP: {resp.text}")
         except Exception as e:
-            logger.warning(f"Failed to store embedding for {qualified_name}: {e}")
+            logger.warning(
+                f"Failed to store batch of {len(embeddings_data)} embeddings: {e}"
+            )
             raise
 
     def search_embeddings(
@@ -333,6 +363,14 @@ else:
         repo_path: str | Path | None = None,
     ) -> None:
         raise VectorStoreError("Qdrant client not available. Cannot store embeddings.")
+
+    def batch_store_embeddings(
+        embeddings_data: list[tuple[int, list[float], str]],
+        repo_path: str | Path | None = None,
+    ) -> None:
+        raise VectorStoreError(
+            "Qdrant client not available. Cannot store batch embeddings."
+        )
 
     def search_embeddings(
         query_embedding: list[float],

@@ -202,6 +202,9 @@ BASE_IGNORE_PATTERNS = {
     ".idea",
     ".vscode",
     ".uv-cache",
+    "static",
+    "tests",
+    "docs"
 }
 
 # Combine base ignores with optional user-provided directories (comma separated)

@@ -109,7 +109,9 @@ class CallProcessor:
     ) -> None:
         """Process function calls in a specific file using its cached AST."""
         relative_path = file_path.relative_to(self.repo_path)
-        logger.debug(f"Processing calls in cached AST for: {relative_path}")
+        logger.info(f"  [Pass 3] Processing calls in: {relative_path}")
+        import sys
+        sys.stdout.flush()
 
         try:
             module_qn = ".".join(
@@ -121,8 +123,17 @@ class CallProcessor:
                     [self.project_name] + list(relative_path.parent.parts)
                 )
 
+            logger.info("    - Phase 1: Top-level functions")
+            import sys
+            sys.stdout.flush()
             self._process_calls_in_functions(root_node, module_qn, language, queries)
+            
+            logger.info("    - Phase 2: Classes and methods")
+            sys.stdout.flush()
             self._process_calls_in_classes(root_node, module_qn, language, queries)
+            
+            logger.info("    - Phase 3: Module-level calls")
+            sys.stdout.flush()
             self._process_module_level_calls(root_node, module_qn, language, queries)
 
         except Exception as e:
@@ -187,7 +198,7 @@ class CallProcessor:
 
             # Rust impl blocks don't have a "name" field, they have a "type" field
             if language == "rust" and class_node.type == "impl_item":
-                # For Rust impl blocks, get the type being implemented
+                # ... existing code ...
                 type_node = class_node.child_by_field_name("type")
                 if not type_node:
                     # Might be a type_identifier child directly
@@ -209,15 +220,27 @@ class CallProcessor:
                     continue
                 class_name = text.decode("utf8")
                 class_qn = f"{module_qn}.{class_name}"
+            
+            logger.info(f"      [Pass 3] Processing class: {class_name}")
+            import sys
+            sys.stdout.flush()
 
             body_node = class_node.child_by_field_name("body")
             if not body_node:
                 continue
 
+            descendant_count = body_node.end_byte - body_node.start_byte
+            logger.info(f"      [Pass 3] Querying methods in {class_name}... (body size: {descendant_count} bytes)")
+            import sys
+            sys.stdout.flush()
+
             method_query = lang_queries["functions"]
             method_cursor = QueryCursor(method_query)
             method_captures = method_cursor.captures(body_node)
             method_nodes = method_captures.get("function", [])
+            
+            logger.info(f"      [Pass 3] Found {len(method_nodes)} methods in {class_name}")
+            sys.stdout.flush()
             for method_node in method_nodes:
                 if not isinstance(method_node, Node):
                     continue
@@ -229,6 +252,10 @@ class CallProcessor:
                     continue
                 method_name = text.decode("utf8")
                 method_qn = f"{class_qn}.{method_name}"
+
+                logger.info(f"        [Pass 3] Processing method: {method_name}")
+                import sys
+                sys.stdout.flush()
 
                 self._ingest_function_calls(
                     method_node,
@@ -359,22 +386,46 @@ class CallProcessor:
         if not calls_query:
             return
 
+        # Optimization: Log if we are entering a large function
+        # This helps identify which specific function is slow
+        descendant_count = caller_node.end_byte - caller_node.start_byte
+        if descendant_count > 10000:
+             logger.info(f"      [Pass 3] Large {caller_type} detected: {caller_qn} ({descendant_count} bytes). Analyzing calls...")
+             import sys
+             sys.stdout.flush()
+
+        logger.info(f"      [Pass 3] TRACE: build_local_variable_type_map starting for {caller_qn}")
+        import sys
+        sys.stdout.flush()
+        
         local_var_types = self.type_inference.build_local_variable_type_map(
             caller_node, module_qn, language
         )
+        
+        logger.info(f"      [Pass 3] TRACE: build_local_variable_type_map finished for {caller_qn}")
+        sys.stdout.flush()
 
         cursor = QueryCursor(calls_query)
         captures = cursor.captures(caller_node)
         call_nodes = captures.get("call", [])
 
-        logger.debug(
-            f"Found {len(call_nodes)} call nodes in {language} for {caller_qn}"
-        )
+        if len(call_nodes) > 50:
+            logger.info(f"      [Pass 3] Large {caller_type} detected: {caller_qn} ({len(call_nodes)} calls)")
+            import sys
+            sys.stdout.flush()
 
-        for call_node in call_nodes:
+        for i, call_node in enumerate(call_nodes):
             if not isinstance(call_node, Node):
                 continue
+            
+            if len(call_nodes) > 50 and i > 0 and i % 50 == 0:
+                logger.info(f"        Progress in {caller_qn}: {i}/{len(call_nodes)} calls...")
+                import sys
+                sys.stdout.flush()
 
+            # TRACE: Processing specific call
+            # Only for very complex cases we might need this, but for now let's see if we even enter here
+            
             # Process nested calls first (inner to outer)
             self._process_nested_calls_in_node(
                 call_node,

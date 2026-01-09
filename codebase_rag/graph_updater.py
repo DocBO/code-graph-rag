@@ -339,15 +339,45 @@ class GraphUpdater:
         )
         logger.info("--- Pass 3: Processing Function Calls from AST Cache ---")
         self._process_function_calls()
+        logger.info("✓ Pass 3 complete: Function calls processed")
 
         # Process method overrides after all definitions are collected
+        logger.info("Processing method overrides...")
+        import sys
+        sys.stdout.flush()
+        sys.stderr.flush()
+        
         self.factory.definition_processor.process_all_method_overrides()
+        
+        logger.info("✓ Method overrides processed")
+        sys.stdout.flush()
+        sys.stderr.flush()
 
         logger.info("\n--- Analysis complete. Flushing all data to database... ---")
+        logger.info("Starting flush_all()...")
+        sys.stdout.flush()
+        sys.stderr.flush()
+        
         self.ingestor.flush_all()
+        
+        logger.info("✓ flush_all() completed successfully")
+        sys.stdout.flush()
+        sys.stderr.flush()
 
         # Generate embeddings for functions and methods if semantic deps available
+        logger.info("About to call _generate_semantic_embeddings()...")
+        sys.stdout.flush()
+        sys.stderr.flush()
+        
         self._generate_semantic_embeddings()
+        
+        logger.info("✓ _generate_semantic_embeddings() completed successfully")
+        sys.stdout.flush()
+        sys.stderr.flush()
+        
+        logger.info("✓✓✓ run() method exiting successfully")
+        sys.stdout.flush()
+        sys.stderr.flush()
 
     def update_embeddings_for_files(self, file_paths: list[Path]) -> None:
         """Update semantic embeddings for functions and methods in specific files."""
@@ -356,7 +386,7 @@ class GraphUpdater:
 
         try:
             from .embedder import embed_code_batch
-            from .vector_store import store_embedding
+            from .vector_store import batch_store_embeddings
 
             # Convert paths to relative strings as stored in DB
             rel_paths = [str(p.relative_to(self.repo_path)) for p in file_paths]
@@ -420,11 +450,17 @@ class GraphUpdater:
                     batch_embeddings = embed_code_batch(
                         batch_codes, batch_size=batch_size
                     )
+                    
+                    batch_data = []
                     for idx, embedding in enumerate(batch_embeddings):
                         code_idx = batch_start + idx
                         node_id, qualified_name = source_code_map[code_idx]
-                        store_embedding(
-                            node_id, embedding, qualified_name, repo_path=self.repo_path
+                        batch_data.append((node_id, embedding, qualified_name))
+                    
+                    if batch_data:
+                        batch_store_embeddings(
+                            batch_data,
+                            repo_path=self.repo_path
                         )
                 except Exception as e:
                     logger.warning(
@@ -540,13 +576,25 @@ class GraphUpdater:
         """Third pass: Process function calls using the cached ASTs."""
         # Create a copy of items to prevent "OrderedDict mutated during iteration" errors
         ast_cache_items = list(self.ast_cache.items())
-        for file_path, (root_node, language) in ast_cache_items:
+        total_files = len(ast_cache_items)
+        logger.info(f"Processing function calls for {total_files} files...")
+        
+        for i, (file_path, (root_node, language)) in enumerate(ast_cache_items):
+            if i > 0 and i % 10 == 0:
+                logger.info(f"  Progress: {i}/{total_files} files processed ({(i/total_files)*100:.1f}%)")
+                sys.stdout.flush()
+                
             self.factory.call_processor.process_calls_in_file(
                 file_path, root_node, language, self.queries
             )
+        
+        logger.info(f"  Progress: {total_files}/{total_files} files processed (100.0%)")
+        sys.stdout.flush()
 
     def _generate_semantic_embeddings(self) -> None:
         """Generate and store semantic embeddings for functions and methods."""
+        logger.info("--- Starting Pass 4: Generating semantic embeddings ---")
+
         if not has_semantic_dependencies():
             logger.info(
                 "Semantic search dependencies not available, skipping embedding generation"
@@ -554,126 +602,89 @@ class GraphUpdater:
             return
 
         try:
-            import time
-
             from .embedder import embed_code_batch
-            from .vector_store import store_embedding
+            from .vector_store import batch_store_embeddings
 
-            logger.info("--- Pass 4: Generating semantic embeddings ---")
-
-            # Query database for all Function and Method nodes with their source info
+            # Query database for all Function and Method nodes in the current repo
             query = """
             MATCH (m:Module)-[:DEFINES]->(n)
             WHERE (n:Function OR n:Method) AND n._repo_path = $repo_path
             RETURN id(n) AS node_id, n.qualified_name AS qualified_name,
                    n.start_line AS start_line, n.end_line AS end_line,
                    m.path AS path
-            ORDER BY n.qualified_name
             """
 
-            results = self.ingestor._execute_query(
-                query, {"repo_path": str(self.repo_path)}
-            )
+            params = {"repo_path": str(self.repo_path)}
+            logger.info("  [Pass 4] Fetching functions and methods from Memgraph...")
+            sys.stdout.flush()
+
+            results = self.ingestor._execute_query(query, params)
 
             if not results:
-                logger.info("No functions or methods found for embedding generation")
+                logger.info("✓ [Pass 4] No functions or methods found for embedding generation")
                 return
 
             total_count = len(results)
-            logger.info(
-                f"Generating embeddings for {total_count} functions/methods (using batch processing)"
-            )
+            logger.info(f"✓ [Pass 4] Found {total_count} items to process")
+            sys.stdout.flush()
 
-            # Prepare data for batch processing
-            embeddings_to_process = []
-            source_code_map = {}  # Track which codes correspond to which nodes
-            skipped_count = 0
+            # Process in chunks to manage memory and provide progress updates
+            chunk_size = 200  # Smaller chunks for better UI feedback
+            processed_count = 0
 
-            for result in results:
-                node_id = result["node_id"]
-                qualified_name = result["qualified_name"]
-                start_line = result.get("start_line")
-                end_line = result.get("end_line")
-                file_path = result.get("path")
+            for i in range(0, total_count, chunk_size):
+                chunk = results[i : i + chunk_size]
+                chunk_codes = []
+                chunk_node_info = []
 
-                # Try to extract source code from cached AST or file
-                source_code = self._extract_source_code(
-                    qualified_name, file_path, start_line, end_line
-                )
+                for result in chunk:
+                    node_id = result["node_id"]
+                    qualified_name = result["qualified_name"]
+                    start_line = result.get("start_line")
+                    end_line = result.get("end_line")
+                    file_path = result.get("path")
 
-                if source_code:
-                    embeddings_to_process.append(source_code)
-                    source_code_map[len(embeddings_to_process) - 1] = (
-                        node_id,
-                        qualified_name,
-                    )
-                else:
-                    skipped_count += 1
-                    if skipped_count <= 5:  # Log first few skipped
-                        logger.debug(f"No source code found for {qualified_name}")
-
-            if not embeddings_to_process:
-                logger.info("No source code found for any functions/methods")
-                return
-
-            logger.info(
-                f"Processing {len(embeddings_to_process)} functions with source code (batch size: 100)"
-            )
-
-            embedded_count = 0
-            failed_count = 0
-            start_time = time.time()
-            batch_size = 100
-
-            # Process in batches using the batch API
-            for batch_start in range(0, len(embeddings_to_process), batch_size):
-                batch_end = min(batch_start + batch_size, len(embeddings_to_process))
-                batch_codes = embeddings_to_process[batch_start:batch_end]
-
-                try:
-                    batch_embeddings = embed_code_batch(
-                        batch_codes, batch_size=batch_size
+                    source_code = self._extract_source_code(
+                        qualified_name, file_path, start_line, end_line
                     )
 
-                    # Store each embedding
-                    for idx, embedding in enumerate(batch_embeddings):
-                        code_idx = batch_start + idx
-                        node_id, qualified_name = source_code_map[code_idx]
+                    if source_code:
+                        chunk_codes.append(source_code)
+                        chunk_node_info.append((node_id, qualified_name))
 
-                        try:
-                            store_embedding(
-                                node_id,
-                                embedding,
-                                qualified_name,
+                if chunk_codes:
+                    try:
+                        batch_embeddings = embed_code_batch(chunk_codes, batch_size=50)
+
+                        # Prepare data for batch storage
+                        embeddings_data = []
+                        for idx, embedding in enumerate(batch_embeddings):
+                            node_id, qualified_name = chunk_node_info[idx]
+                            embeddings_data.append((node_id, embedding, qualified_name))
+
+                        if embeddings_data:
+                            batch_store_embeddings(
+                                embeddings_data,
                                 repo_path=self.repo_path,
                             )
-                            embedded_count += 1
-                        except Exception as e:
-                            logger.warning(
-                                f"Failed to store embedding for {qualified_name}: {e}"
-                            )
-                            failed_count += 1
 
-                    # Log progress
-                    elapsed = time.time() - start_time
-                    rate = embedded_count / elapsed if elapsed > 0 else 0
-                    logger.info(
-                        f"Progress: {batch_end}/{len(embeddings_to_process)} embedded ({rate:.1f}/sec)"
-                    )
+                        processed_count += len(chunk_codes)
+                        percent = (processed_count / total_count) * 100
+                        logger.info(
+                            f"  [Pass 4] Progress: {processed_count}/{total_count} ({percent:.1f}%)"
+                        )
+                        sys.stdout.flush()
+                    except Exception as e:
+                        logger.warning(f"  [Pass 4] Failed chunk at {i}: {e}")
 
-                except Exception as e:
-                    logger.warning(
-                        f"Failed to process batch [{batch_start}:{batch_end}]: {e}"
-                    )
-                    failed_count += batch_end - batch_start
-
-            elapsed_time = time.time() - start_time
             logger.info(
-                f"✓ Embedding generation complete: {embedded_count} embedded, {failed_count} failed, {skipped_count} skipped (took {elapsed_time:.1f}s, {embedded_count / elapsed_time:.2f}/sec)"
+                f"✓ [Pass 4] Completed semantic embedding generation ({processed_count} items)"
             )
+            sys.stdout.flush()
 
         except Exception as e:
-            logger.warning(f"Failed to generate semantic embeddings: {e}")
+            logger.error(f"Error during semantic embedding generation: {e}")
+            logger.error("Skipping rest of Pass 4.")
 
     def _extract_source_code(
         self, qualified_name: str, file_path: str, start_line: int, end_line: int

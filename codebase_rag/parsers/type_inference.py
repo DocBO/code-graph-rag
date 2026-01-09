@@ -43,6 +43,9 @@ class TypeInferenceEngine:
         self.module_qn_to_file_path = module_qn_to_file_path
         self.class_inheritance = class_inheritance
 
+        # Cache for instance variables discovered in modules to avoid redundant work
+        self.module_instance_vars_cache: dict[str, dict[str, str]] = {}
+
         # Language-specific type inference engines (lazy-loaded)
         self._java_type_inference: JavaTypeInferenceEngine | None = None
         self._lua_type_inference: LuaTypeInferenceEngine | None = None
@@ -88,13 +91,25 @@ class TypeInferenceEngine:
         return self._js_type_inference
 
     def build_local_variable_type_map(
-        self, caller_node: Node, module_qn: str, language: str
+        self, caller_node: Node, module_qn: str, language: str, visited: set[str] | None = None
     ) -> dict[str, str]:
         """
         Build a map of local variable names to their inferred types within a function.
         This enables resolution of instance method calls like user.get_name().
         """
         local_var_types: dict[str, str] = {}
+        
+        # Prevent infinite recursion for type inference
+        if visited is None:
+            visited = set()
+        
+        # Performance monitoring for ALL functions
+        import time
+        start_time = time.time()
+        
+        logger.info(f"        [TypeInference] build_local_variable_type_map ENTRY for {module_qn}")
+        import sys
+        sys.stdout.flush()
 
         if language == "python":
             # Use existing Python type inference logic
@@ -120,26 +135,49 @@ class TypeInferenceEngine:
 
         try:
             # First, try to infer types from function parameters
+            logger.info("        [TypeInference]   - Phase: Parameters")
+            sys.stdout.flush()
             self._infer_parameter_types(caller_node, local_var_types, module_qn)
 
             # Pass 1: Handle direct assignments and constructors (no method calls)
+            logger.info("        [TypeInference]   - Phase: Simple Assignments")
+            sys.stdout.flush()
+            t1 = time.time()
             self._traverse_for_assignments_simple(
                 caller_node, local_var_types, module_qn
             )
+            if time.time() - t1 > 0.5:
+                logger.info(f"      [TypeInference] Slow simple traverse ({time.time() - t1:.2f}s)")
+                sys.stdout.flush()
 
             # Pass 2: Handle method call assignments using types from pass 1
+            logger.info("        [TypeInference]   - Phase: Complex Assignments")
+            sys.stdout.flush()
+            t2 = time.time()
             self._traverse_for_assignments_complex(
-                caller_node, local_var_types, module_qn
+                caller_node, local_var_types, module_qn, visited
             )
+            if time.time() - t2 > 0.5:
+                logger.info(f"      [TypeInference] Slow complex traverse ({time.time() - t2:.2f}s)")
+                sys.stdout.flush()
 
             # Handle loop variables in comprehensions and for loops
+            logger.info("        [TypeInference]   - Phase: Loop Variables")
+            sys.stdout.flush()
             self._infer_loop_variable_types(caller_node, local_var_types, module_qn)
 
             # Handle instance variables like self.repo
-            self._infer_instance_variable_types(caller_node, local_var_types, module_qn)
+            logger.info("        [TypeInference]   - Phase: Instance Variables")
+            sys.stdout.flush()
+            self._infer_instance_variable_types(caller_node, local_var_types, module_qn, visited)
 
         except Exception as e:
             logger.debug(f"Failed to build local variable type map: {e}")
+
+        elapsed = time.time() - start_time
+        logger.info(f"        [TypeInference] build_local_variable_type_map EXIT for {module_qn} (took {elapsed:.2f}s)")
+        import sys
+        sys.stdout.flush()
 
         return local_var_types
 
@@ -152,11 +190,16 @@ class TypeInferenceEngine:
         if not params_node:
             return
 
-        for param in params_node.children:
+        import sys
+        for i, param in enumerate(params_node.children):
             if param.type == "identifier":
                 param_text = param.text
                 if param_text is not None:
                     param_name = param_text.decode("utf8")
+                    
+                    # LOGGING for potential O(N*M) bottleneck
+                    # logger.info(f"        [TypeInference]     - Param {i}: {param_name}")
+                    # sys.stdout.flush()
 
                     # Try to infer type from parameter name using available classes
                     inferred_type = self._infer_type_from_parameter_name(
@@ -364,17 +407,23 @@ class TypeInferenceEngine:
         return None
 
     def _infer_instance_variable_types(
-        self, caller_node: Node, local_var_types: dict[str, str], module_qn: str
+        self, caller_node: Node, local_var_types: dict[str, str], module_qn: str, visited: set[str] | None = None
     ) -> None:
         """Infer types for instance variables by analyzing assignments."""
         # Look for assignments like self.repo = Repository() in the current method
-        self._analyze_self_assignments(caller_node, local_var_types, module_qn)
+        logger.info("        [TypeInference]     - _analyze_self_assignments(caller_node)")
+        sys.stdout.flush()
+        self._analyze_self_assignments(caller_node, local_var_types, module_qn, visited)
 
         # Also look for instance variable assignments in the class's __init__ method
-        self._analyze_class_init_assignments(caller_node, local_var_types, module_qn)
+        logger.info("        [TypeInference]     - _analyze_class_init_assignments")
+        sys.stdout.flush()
+        self._analyze_class_init_assignments(caller_node, local_var_types, module_qn, visited)
+        logger.info("        [TypeInference]     - instance variables complete")
+        sys.stdout.flush()
 
     def _analyze_class_init_assignments(
-        self, caller_node: Node, local_var_types: dict[str, str], module_qn: str
+        self, caller_node: Node, local_var_types: dict[str, str], module_qn: str, visited: set[str] | None = None
     ) -> None:
         """Analyze instance variable assignments from the class's __init__ method."""
         # Find the class that contains this method
@@ -391,7 +440,7 @@ class TypeInferenceEngine:
 
         logger.debug("Found __init__ method, analyzing self assignments...")
         # Analyze self assignments in the __init__ method
-        self._analyze_self_assignments(init_method, local_var_types, module_qn)
+        self._analyze_self_assignments(init_method, local_var_types, module_qn, visited)
 
     def _find_containing_class(self, method_node: Node) -> Node | None:
         """Find the class node that contains the given method node."""
@@ -448,13 +497,18 @@ class TypeInferenceEngine:
         return None
 
     def _analyze_self_assignments(
-        self, node: Node, local_var_types: dict[str, str], module_qn: str
+        self, node: Node, local_var_types: dict[str, str], module_qn: str, visited: set[str] | None = None
     ) -> None:
         """Analyze assignments to self.attribute to determine instance variable types."""
         stack: list[Node] = [node]
+        count = 0
 
         while stack:
             current = stack.pop()
+            count += 1
+            if count % 1000 == 0:
+                logger.info(f"        [TypeInference]       - Analyzed {count} nodes in _analyze_self_assignments...")
+                sys.stdout.flush()
 
             if current.type == "assignment":
                 left_node = current.child_by_field_name("left")
@@ -465,7 +519,7 @@ class TypeInferenceEngine:
                     if left_text and left_text.decode("utf8").startswith("self."):
                         attr_name = left_text.decode("utf8")
                         assigned_type = self._infer_type_from_expression(
-                            right_node, module_qn
+                            right_node, module_qn, visited
                         )
                         if assigned_type:
                             local_var_types[attr_name] = assigned_type
@@ -533,7 +587,7 @@ class TypeInferenceEngine:
             stack.extend(reversed(current.children))
 
     def _traverse_for_assignments_complex(
-        self, node: Node, local_var_types: dict[str, str], module_qn: str
+        self, node: Node, local_var_types: dict[str, str], module_qn: str, visited: set[str] | None = None
     ) -> None:
         """Traverse AST for complex assignments (method calls) using existing variable types."""
         stack: list[Node] = [node]
@@ -541,7 +595,7 @@ class TypeInferenceEngine:
         while stack:
             current = stack.pop()
             if current.type == "assignment":
-                self._process_assignment_complex(current, local_var_types, module_qn)
+                self._process_assignment_complex(current, local_var_types, module_qn, visited)
 
             stack.extend(reversed(current.children))
 
@@ -568,7 +622,7 @@ class TypeInferenceEngine:
             logger.debug(f"Inferred type (simple): {var_name} -> {inferred_type}")
 
     def _process_assignment_complex(
-        self, assignment_node: Node, local_var_types: dict[str, str], module_qn: str
+        self, assignment_node: Node, local_var_types: dict[str, str], module_qn: str, visited: set[str] | None = None
     ) -> None:
         """Process complex assignments (method calls) using existing variable types."""
         # Handle assignment: variable = expression
@@ -589,7 +643,7 @@ class TypeInferenceEngine:
 
         # Handle method call expressions with access to local_var_types
         inferred_type = self._infer_type_from_expression_complex(
-            right_node, module_qn, local_var_types
+            right_node, module_qn, local_var_types, visited
         )
         if inferred_type:
             local_var_types[var_name] = inferred_type
@@ -627,7 +681,9 @@ class TypeInferenceEngine:
                 return result
         return None
 
-    def _infer_type_from_expression(self, node: Node, module_qn: str) -> str | None:
+    def _infer_type_from_expression(
+        self, node: Node, module_qn: str, visited: set[str] | None = None
+    ) -> str | None:
         """Infer type from the right-hand side of an assignment."""
         # Handle direct constructor calls: User(args)
         if node.type == "call":
@@ -648,7 +704,7 @@ class TypeInferenceEngine:
                     # This is the old method without local_var_types - try without them
                     # Method calls without variable context will likely fail, but we try anyway
                     return self._infer_method_call_return_type(
-                        method_call_text, module_qn, local_var_types=None
+                        method_call_text, module_qn, local_var_types=None, visited=visited
                     )
 
         # Handle list comprehensions: [User(...) for i in range(x)]
@@ -657,7 +713,7 @@ class TypeInferenceEngine:
             body_node = node.child_by_field_name("body")
             if body_node:
                 # Recursively infer type from the expression inside
-                return self._infer_type_from_expression(body_node, module_qn)
+                return self._infer_type_from_expression(body_node, module_qn, visited)
 
         return None
 
@@ -687,7 +743,7 @@ class TypeInferenceEngine:
         return None
 
     def _infer_type_from_expression_complex(
-        self, node: Node, module_qn: str, local_var_types: dict[str, str]
+        self, node: Node, module_qn: str, local_var_types: dict[str, str], visited: set[str] | None = None
     ) -> str | None:
         """Infer type from complex expressions (method calls) using existing variable types."""
         # Handle method calls that return objects: obj.some_method()
@@ -698,7 +754,7 @@ class TypeInferenceEngine:
                 method_call_text = self._extract_full_method_call(func_node)
                 if method_call_text:
                     return self._infer_method_call_return_type(
-                        method_call_text, module_qn, local_var_types
+                        method_call_text, module_qn, local_var_types, visited
                     )
 
         return None
@@ -715,16 +771,17 @@ class TypeInferenceEngine:
         method_call: str,
         module_qn: str,
         local_var_types: dict[str, str] | None = None,
+        visited: set[str] | None = None,
     ) -> str | None:
         """Infer return type of a method call via static analysis."""
         # Handle chained method calls first
         if "." in method_call and self._is_method_chain(method_call):
             return self._infer_chained_call_return_type_fixed(
-                method_call, module_qn, local_var_types
+                method_call, module_qn, local_var_types, visited
             )
 
         # Try proper AST analysis for non-chained calls
-        return self._infer_method_return_type(method_call, module_qn, local_var_types)
+        return self._infer_method_return_type(method_call, module_qn, local_var_types, visited)
 
     def _is_method_chain(self, call_name: str) -> bool:
         """Check if this appears to be a method chain with parentheses."""
@@ -740,6 +797,7 @@ class TypeInferenceEngine:
         call_name: str,
         module_qn: str,
         local_var_types: dict[str, str] | None = None,
+        visited: set[str] | None = None,
     ) -> str | None:
         """Infer return type for chained method calls like obj.method().other_method()."""
         # Find the rightmost method that's not in parentheses
@@ -754,7 +812,7 @@ class TypeInferenceEngine:
 
         # Infer the object type using the same logic as call_processor
         object_type = self._infer_object_type_for_chained_call(
-            object_expr, module_qn, local_var_types
+            object_expr, module_qn, local_var_types, visited
         )
 
         if object_type:
@@ -767,7 +825,8 @@ class TypeInferenceEngine:
 
             # Get the return type of the final method
             method_qn = f"{full_object_type}.{final_method}"
-            return self._get_method_return_type_from_ast(method_qn)
+            # Use visited-aware return type inference
+            return self._infer_method_return_type(f"{method_qn}()", module_qn, None, visited)
 
         return None
 
@@ -776,6 +835,7 @@ class TypeInferenceEngine:
         object_expr: str,
         module_qn: str,
         local_var_types: dict[str, str] | None = None,
+        visited: set[str] | None = None,
     ) -> str | None:
         """Infer the type of an object expression for chained calls."""
         # For simple variable references, use local_var_types
@@ -791,7 +851,7 @@ class TypeInferenceEngine:
         if "(" in object_expr and ")" in object_expr:
             # This is a method call, infer its return type
             return self._infer_method_call_return_type(
-                object_expr, module_qn, local_var_types
+                object_expr, module_qn, local_var_types, visited
             )
 
         return None
@@ -801,11 +861,12 @@ class TypeInferenceEngine:
         call_name: str,
         module_qn: str,
         local_var_types: dict[str, str] | None = None,
+        visited: set[str] | None = None,
     ) -> str | None:
         """Infer return type for chained method calls like obj.method().other_method()."""
         # Delegate to the fixed implementation
         return self._infer_chained_call_return_type_fixed(
-            call_name, module_qn, local_var_types
+            call_name, module_qn, local_var_types, visited
         )
 
     def _infer_expression_return_type(
@@ -813,6 +874,7 @@ class TypeInferenceEngine:
         expression: str,
         module_qn: str,
         local_var_types: dict[str, str] | None = None,
+        visited: set[str] | None = None,
     ) -> str | None:
         """Infer the return type of a complex expression like 'user.method(args)'."""
         # For simple variable references, use local_var_types
@@ -827,7 +889,7 @@ class TypeInferenceEngine:
 
         # For method calls, use recursive method call return type inference
         return self._infer_method_call_return_type(
-            expression, module_qn, local_var_types
+            expression, module_qn, local_var_types, visited
         )
 
     def _get_method_return_type_from_ast(self, method_qn: str) -> str | None:
@@ -858,6 +920,7 @@ class TypeInferenceEngine:
         method_call: str,
         module_qn: str,
         local_var_types: dict[str, str] | None = None,
+        visited: set[str] | None = None,
     ) -> str | None:
         """
         Infer the return type of a method call by analyzing the method's implementation.
@@ -865,7 +928,7 @@ class TypeInferenceEngine:
         try:
             # Parse the method call to get the method qualified name
             method_qn = self._resolve_method_qualified_name(
-                method_call, module_qn, local_var_types
+                method_call, module_qn, local_var_types, visited
             )
             if not method_qn:
                 return None
@@ -876,7 +939,7 @@ class TypeInferenceEngine:
                 return None
 
             # Analyze return statements in the method
-            return self._analyze_method_return_statements(method_node, method_qn)
+            return self._analyze_method_return_statements(method_node, method_qn, visited)
 
         except Exception as e:
             logger.debug(f"Failed to infer return type for {method_call}: {e}")
@@ -887,6 +950,7 @@ class TypeInferenceEngine:
         method_call: str,
         module_qn: str,
         local_var_types: dict[str, str] | None = None,
+        visited: set[str] | None = None,
     ) -> str | None:
         """Resolve a method call like 'self.manager.create_user' to its qualified name."""
         if "." not in method_call:
@@ -922,7 +986,7 @@ class TypeInferenceEngine:
             method_name = parts[-1]  # Last part is the method name
 
             # Try to infer the type of self.attribute
-            attribute_type = self._infer_attribute_type(attribute_name, module_qn)
+            attribute_type = self._infer_attribute_type(attribute_name, module_qn, visited)
             if attribute_type:
                 return self._resolve_class_method(
                     attribute_type, method_name, module_qn
@@ -985,14 +1049,29 @@ class TypeInferenceEngine:
 
         return None
 
-    def _infer_attribute_type(self, attribute_name: str, module_qn: str) -> str | None:
+    def _infer_attribute_type(
+        self, attribute_name: str, module_qn: str, visited: set[str] | None = None
+    ) -> str | None:
         """Infer the type of an instance attribute like self.manager."""
-        # Extract the class name from the module_qn
-        # module_qn looks like "project.services.user_service" and we need the class context
-        # This is challenging because we don't know which class we're currently analyzing
-        # Let's try to find it by analyzing the available AST nodes
+        if visited is None:
+            visited = set()
+        
+        # Guard against recursive module scans
+        module_scan_key = f"scan:{module_qn}"
+        if module_scan_key in visited:
+            return None
+
+        # Check cache first
+        if module_qn in self.module_instance_vars_cache:
+            instance_vars = self.module_instance_vars_cache[module_qn]
+            full_attr_name = f"self.{attribute_name}"
+            return instance_vars.get(full_attr_name)
 
         try:
+            # Mark this module as being scanned
+            new_visited = visited.copy()
+            new_visited.add(module_scan_key)
+
             # Look for the class definition that might contain this method call
             for file_path, (root_node, language) in self.ast_cache.items():
                 if language != "python":
@@ -1013,13 +1092,23 @@ class TypeInferenceEngine:
 
                 # Look for all classes in this module and analyze their instance variables
                 instance_vars: dict[str, str] = {}
-                self._analyze_self_assignments(root_node, instance_vars, module_qn)
+                self._analyze_self_assignments(root_node, instance_vars, module_qn, new_visited)
+
+                # Cache the results for this module
+                self.module_instance_vars_cache[module_qn] = instance_vars
 
                 # Check if our attribute was found
                 full_attr_name = f"self.{attribute_name}"
                 if full_attr_name in instance_vars:
-                    attr_type: str = instance_vars[full_attr_name]
-                    return attr_type
+                    return instance_vars[full_attr_name]
+
+                # If found and cached, we can stop searching files
+                break
+
+        except Exception as e:
+            logger.debug(
+                f"Failed to analyze instance variables for {attribute_name}: {e}"
+            )
 
         except Exception as e:
             logger.debug(
@@ -1165,9 +1254,20 @@ class TypeInferenceEngine:
         return None
 
     def _analyze_method_return_statements(
-        self, method_node: Node, method_qn: str
+        self, method_node: Node, method_qn: str, visited: set[str] | None = None
     ) -> str | None:
         """Analyze return statements in a method to infer return type."""
+        # Detect potential infinite recursion
+        if visited is None:
+            visited = set()
+        
+        if method_qn in visited:
+            logger.debug(f"Detected potential recursion in return type inference for {method_qn}")
+            return None
+        
+        new_visited = visited.copy()
+        new_visited.add(method_qn)
+
         # Find all return statements in the method
         return_nodes: list[Node] = []
         self._find_return_statements(method_node, return_nodes)
@@ -1183,7 +1283,7 @@ class TypeInferenceEngine:
 
             if return_value:
                 # Analyze what's being returned
-                inferred_type = self._analyze_return_expression(return_value, method_qn)
+                inferred_type = self._analyze_return_expression(return_value, method_qn, new_visited)
                 if inferred_type:
                     return inferred_type
 
@@ -1200,7 +1300,8 @@ class TypeInferenceEngine:
 
             stack.extend(reversed(current.children))
 
-    def _analyze_return_expression(self, expr_node: Node, method_qn: str) -> str | None:
+    def _analyze_return_expression(self, expr_node: Node, method_qn: str, visited: set[str] | None = None
+    ) -> str | None:
         """Analyze a return expression to infer its type."""
         # Handle direct constructor calls: return User(name) or return cls()
         if expr_node.type == "call":
@@ -1234,7 +1335,7 @@ class TypeInferenceEngine:
                         method_qn.split(".")[:-2]
                     )  # Remove class.method
                     return self._infer_method_call_return_type(
-                        method_call_text, module_qn
+                        method_call_text, module_qn, visited=visited
                     )
 
         # Handle variable references: return existing, return user, return self, return cls
@@ -1259,8 +1360,9 @@ class TypeInferenceEngine:
                     method_node = self._find_method_ast_node(method_qn)
                     if method_node:
                         # Build local variable types for this method
+                        # We pass 'visited' down to support further recursion detection
                         local_vars = self.build_local_variable_type_map(
-                            method_node, module_qn, "python"
+                            method_node, module_qn, "python", visited
                         )
                         if identifier in local_vars:
                             logger.debug(

@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-01-09
+
+### Embedding Generation & Connection Hangs Fixed 🔧
+- **Fixed cursor iteration hang** - Replaced `cursor.fetchall()` with `cursor.fetchone()` loop in all query execution methods (`_execute_query`, `_execute_batch_with_return`, `execute_read_query`) to prevent memory issues and timeouts with large result sets.
+- **Fixed connection close hang** - Added 5-second timeout to `conn.close()` in `__exit__()` to prevent indefinite hangs when Memgraph is slow to finalize connections on large repositories.
+- **Disabled batch embedding generation** - Batch embedding generation at ingestion time causes hangs on large repositories with thousands of functions. Embeddings are now generated on-demand during semantic search queries instead, improving initial ingestion performance.
+- **Enhanced logging** - Added detailed logging throughout graph flushing, relationship processing, and embedding generation phases with stdout/stderr flushing to help identify bottlenecks.
+
 ## 2025-12-29
 
 ### Semantic Search & Qdrant Consistency Fix 🔍

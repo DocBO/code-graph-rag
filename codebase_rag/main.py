@@ -953,7 +953,18 @@ def start(
                 if not _export_graph_to_file(ingestor, output):
                     raise typer.Exit(1)
 
+        logger.info("✓ Context manager exited successfully")
+        logger.info("About to print completion message...")
+        import sys
+        sys.stdout.flush()
+        sys.stderr.flush()
+        
         console.print("[bold green]Graph update completed![/bold green]")
+        
+        logger.info("✓ Completion message printed")
+        sys.stdout.flush()
+        sys.stderr.flush()
+        
         return
 
     try:

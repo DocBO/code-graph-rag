@@ -343,41 +343,18 @@ class GraphUpdater:
 
         # Process method overrides after all definitions are collected
         logger.info("Processing method overrides...")
-        import sys
-        sys.stdout.flush()
-        sys.stderr.flush()
         
         self.factory.definition_processor.process_all_method_overrides()
         
         logger.info("✓ Method overrides processed")
-        sys.stdout.flush()
-        sys.stderr.flush()
 
         logger.info("\n--- Analysis complete. Flushing all data to database... ---")
-        logger.info("Starting flush_all()...")
-        sys.stdout.flush()
-        sys.stderr.flush()
-        
         self.ingestor.flush_all()
         
-        logger.info("✓ flush_all() completed successfully")
-        sys.stdout.flush()
-        sys.stderr.flush()
-
         # Generate embeddings for functions and methods if semantic deps available
-        logger.info("About to call _generate_semantic_embeddings()...")
-        sys.stdout.flush()
-        sys.stderr.flush()
-        
         self._generate_semantic_embeddings()
         
-        logger.info("✓ _generate_semantic_embeddings() completed successfully")
-        sys.stdout.flush()
-        sys.stderr.flush()
-        
-        logger.info("✓✓✓ run() method exiting successfully")
-        sys.stdout.flush()
-        sys.stderr.flush()
+        logger.info("✓✓✓ Ingestion complete")
 
     def update_embeddings_for_files(self, file_paths: list[Path]) -> None:
         """Update semantic embeddings for functions and methods in specific files."""
@@ -581,15 +558,13 @@ class GraphUpdater:
         
         for i, (file_path, (root_node, language)) in enumerate(ast_cache_items):
             if i > 0 and i % 10 == 0:
-                logger.info(f"  Progress: {i}/{total_files} files processed ({(i/total_files)*100:.1f}%)")
-                sys.stdout.flush()
+                logger.debug(f"  Progress: {i}/{total_files} files processed ({(i/total_files)*100:.1f}%)")
                 
             self.factory.call_processor.process_calls_in_file(
                 file_path, root_node, language, self.queries
             )
         
-        logger.info(f"  Progress: {total_files}/{total_files} files processed (100.0%)")
-        sys.stdout.flush()
+        logger.debug(f"  Progress: {total_files}/{total_files} files processed (100.0%)")
 
     def _generate_semantic_embeddings(self) -> None:
         """Generate and store semantic embeddings for functions and methods."""
@@ -616,7 +591,6 @@ class GraphUpdater:
 
             params = {"repo_path": str(self.repo_path)}
             logger.info("  [Pass 4] Fetching functions and methods from Memgraph...")
-            sys.stdout.flush()
 
             results = self.ingestor._execute_query(query, params)
 
@@ -626,7 +600,6 @@ class GraphUpdater:
 
             total_count = len(results)
             logger.info(f"✓ [Pass 4] Found {total_count} items to process")
-            sys.stdout.flush()
 
             # Process in chunks to manage memory and provide progress updates
             chunk_size = 200  # Smaller chunks for better UI feedback
@@ -673,14 +646,12 @@ class GraphUpdater:
                         logger.info(
                             f"  [Pass 4] Progress: {processed_count}/{total_count} ({percent:.1f}%)"
                         )
-                        sys.stdout.flush()
                     except Exception as e:
                         logger.warning(f"  [Pass 4] Failed chunk at {i}: {e}")
 
             logger.info(
                 f"✓ [Pass 4] Completed semantic embedding generation ({processed_count} items)"
             )
-            sys.stdout.flush()
 
         except Exception as e:
             logger.error(f"Error during semantic embedding generation: {e}")

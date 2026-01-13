@@ -1,5 +1,13 @@
 # Graph-RAG Quality Assessment
 
+## 2026-01-09
+
+### Fix: Type Inference Infinite Recursion & Phase 4 Optimization
+1. **Reason for triggering**: User reported process hang during ingestion of `addibase` repository.
+2. **Expected outcome**: Ingestion should complete efficiently, including phase 4 (semantic embeddings).
+3. **Real outcome**: Identified infinite recursion in `_analyze_self_assignments` due to circular type references. Implemented a `visited` set recursion guard. Restored Phase 4 with batch processing optimizations.
+4. **Score of success**: 6/6 - Ingestion now completes on `addibase` and semantic embeddings are correctly generated.
+
 ## 2025-12-29
 
 ### Fix: CALLS relationship failures & Real-time Updater Consistency

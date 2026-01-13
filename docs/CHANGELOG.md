@@ -2,7 +2,13 @@
 
 ## 2026-01-09
 
-### Embedding Generation & Connection Hangs Fixed 🔧
+### Type Inference Recursion & Phase 4 Optimization 🔧
+- **Fixed Infinite Recursion in Type Inference** - Implemented a `visited` set guard in `TypeInferenceEngine` to prevent infinite loops during self-assignment analysis (e.g., `x = self.x()`).
+- **Restored & Optimized Phase 4 (Semantic Embeddings)** - Re-enabled and optimized semantic embedding generation using batch processing for both Local and Cloud providers, significantly reducing ingestion time.
+- **Enhanced Ingestion Memory Efficiency** - Introduced module-level instance variable caching and batch upserts to Qdrant to handle large repositories like `addibase` without OOM.
+- **Cleaned Debug Instrumentation** - Removed verbose log statements and manual flushing added during the hang investigation for cleaner production output.
+
+### Connection & Hangs Fixed 🔧
 - **Fixed cursor iteration hang** - Replaced `cursor.fetchall()` with `cursor.fetchone()` loop in all query execution methods (`_execute_query`, `_execute_batch_with_return`, `execute_read_query`) to prevent memory issues and timeouts with large result sets.
 - **Fixed connection close hang** - Added 5-second timeout to `conn.close()` in `__exit__()` to prevent indefinite hangs when Memgraph is slow to finalize connections on large repositories.
 - **Disabled batch embedding generation** - Batch embedding generation at ingestion time causes hangs on large repositories with thousands of functions. Embeddings are now generated on-demand during semantic search queries instead, improving initial ingestion performance.

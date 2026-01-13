@@ -110,34 +110,16 @@ class MemgraphIngestor:
     def __exit__(
         self, exc_type: type | None, exc_val: Exception | None, exc_tb: Any
     ) -> None:
-        import sys
-        import threading
-        import time
-        
-        logger.info("__exit__() CALLED - context manager exit")
-        sys.stdout.flush()
-        sys.stderr.flush()
-        
         if exc_type:
             logger.error(
                 f"An exception occurred: {exc_val}. Flushing remaining items...",
                 exc_info=True,
             )
-        logger.info("__exit__() - calling flush_all()")
-        sys.stdout.flush()
-        sys.stderr.flush()
         
         self.flush_all()
         
-        logger.info("__exit__() - flush_all() returned")
-        sys.stdout.flush()
-        sys.stderr.flush()
-        
         if self.conn:
-            logger.info("__exit__() - closing connection")
-            sys.stdout.flush()
-            sys.stderr.flush()
-            
+            import threading
             # Close the connection with a timeout to prevent hanging
             # on large repositories where Memgraph might be slow to finalize
             def close_connection():
@@ -153,10 +135,7 @@ class MemgraphIngestor:
             if close_thread.is_alive():
                 logger.warning("Connection close timed out after 5 seconds - abandoning connection")
             else:
-                logger.info("Disconnected from Memgraph.")
-            
-            sys.stdout.flush()
-            sys.stderr.flush()
+                logger.debug("Disconnected from Memgraph.")
 
     def _get_repo_filter(self, node_var: str = "n") -> str:
         """Get a Cypher WHERE clause filter for the current repo.
@@ -420,19 +399,10 @@ class MemgraphIngestor:
         self.node_buffer.clear()
 
     def flush_relationships(self) -> None:
-        import sys
-        logger.info("flush_relationships() ENTRY")
-        sys.stdout.flush()
-        sys.stderr.flush()
-        
+        """Flushes the buffered relationships to the database."""
         if not self.relationship_buffer:
-            logger.debug("No buffered relationships to flush")
             return
 
-        logger.info(f"  Processing {len(self.relationship_buffer)} buffered relationships...")
-        sys.stdout.flush()
-        sys.stderr.flush()
-        
         rels_by_pattern = defaultdict(list)
         for from_node, rel_type, to_node, props in self.relationship_buffer:
             pattern = (from_node[0], from_node[1], rel_type, to_node[0], to_node[1])
@@ -440,16 +410,11 @@ class MemgraphIngestor:
                 {"from_val": from_node[2], "to_val": to_node[2], "props": props or {}}
             )
 
-        logger.info(f"  Grouped into {len(rels_by_pattern)} patterns")
-        sys.stdout.flush()
-        sys.stderr.flush()
-        
         total_attempted = 0
         total_successful = 0
 
-        for pattern_idx, (pattern, params_list) in enumerate(rels_by_pattern.items()):
+        for pattern, params_list in rels_by_pattern.items():
             from_label, from_key, rel_type, to_label, to_key = pattern
-            logger.debug(f"    Pattern {pattern_idx + 1}/{len(rels_by_pattern)}: {rel_type} with {len(params_list)} items")
             
             query = (
                 f"MATCH (a:{from_label} {{{from_key}: row.from_val, _repo_path: $repo_path}}), "
@@ -464,17 +429,11 @@ class MemgraphIngestor:
                 )
 
             total_attempted += len(params_list)
-            logger.debug(f"      Executing batch...")
-            sys.stdout.flush()
-            sys.stderr.flush()
             
             results = self._execute_batch_with_return(
                 query, params_list, {"repo_path": self.repo_path}
             )
             
-            sys.stdout.flush()
-            sys.stderr.flush()
-            logger.debug(f"      Batch returned {len(results) if results else 0} results")
             batch_successful = (
                 sum(r.get("created", 0) for r in results) if results else 0
             )
@@ -484,62 +443,24 @@ class MemgraphIngestor:
             if rel_type == "CALLS":
                 failed = len(params_list) - batch_successful
                 if failed > 0:
-                    logger.warning(
+                    logger.debug(
                         f"Failed to create {failed} CALLS relationships - nodes may not exist"
                     )
-                    # Log first 3 samples
-                    for i, sample in enumerate(params_list[:3]):
-                        logger.warning(
-                            f"  Sample {i + 1}: {from_label}.{sample['from_val']} -> {to_label}.{sample['to_val']}"
-                        )
 
         logger.info(
             f"Flushed {len(self.relationship_buffer)} relationships ({total_successful} successful, {total_attempted - total_successful} failed)."
         )
-        sys.stdout.flush()
-        sys.stderr.flush()
-        
-        logger.info("  About to clear relationship buffer...")
-        sys.stdout.flush()
-        sys.stderr.flush()
         self.relationship_buffer.clear()
-        logger.info("  ✓ Relationship buffer cleared")
-        sys.stdout.flush()
-        sys.stderr.flush()
-        
-        logger.info("flush_relationships() EXIT")
-        sys.stdout.flush()
-        sys.stderr.flush()
 
     def flush_all(self) -> None:
-        import sys
+        """Flushes all pending nodes and relationships to the database."""
+        if not self.node_buffer and not self.relationship_buffer:
+            return
+
         logger.info("--- Flushing all pending writes to database... ---")
-        logger.info(f"    Buffered nodes: {len(self.node_buffer)}")
-        logger.info(f"    Buffered relationships: {len(self.relationship_buffer)}")
-        sys.stdout.flush()
-        sys.stderr.flush()
-        
-        logger.info("  Flushing nodes...")
         self.flush_nodes()
-        logger.info("  ✓ Nodes flushed")
-        sys.stdout.flush()
-        sys.stderr.flush()
-        
-        logger.info("  [PRE] About to call flush_relationships()...")
-        sys.stdout.flush()
-        sys.stderr.flush()
         self.flush_relationships()
-        logger.info("  [POST] flush_relationships() returned successfully")
-        sys.stdout.flush()
-        sys.stderr.flush()
-        
         logger.info("--- Flushing complete. ---")
-        sys.stdout.flush()
-        sys.stderr.flush()
-        
-        logger.info("✓ flush_all() exiting successfully")
-        sys.stdout.flush()
-        sys.stderr.flush()
 
     def fetch_all(self, query: str, params: dict[str, Any] | None = None) -> list:
         """Executes a query and fetches all results."""

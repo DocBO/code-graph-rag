@@ -103,14 +103,6 @@ class TypeInferenceEngine:
         if visited is None:
             visited = set()
         
-        # Performance monitoring for ALL functions
-        import time
-        start_time = time.time()
-        
-        logger.info(f"        [TypeInference] build_local_variable_type_map ENTRY for {module_qn}")
-        import sys
-        sys.stdout.flush()
-
         if language == "python":
             # Use existing Python type inference logic
             pass
@@ -135,49 +127,26 @@ class TypeInferenceEngine:
 
         try:
             # First, try to infer types from function parameters
-            logger.info("        [TypeInference]   - Phase: Parameters")
-            sys.stdout.flush()
             self._infer_parameter_types(caller_node, local_var_types, module_qn)
 
             # Pass 1: Handle direct assignments and constructors (no method calls)
-            logger.info("        [TypeInference]   - Phase: Simple Assignments")
-            sys.stdout.flush()
-            t1 = time.time()
             self._traverse_for_assignments_simple(
                 caller_node, local_var_types, module_qn
             )
-            if time.time() - t1 > 0.5:
-                logger.info(f"      [TypeInference] Slow simple traverse ({time.time() - t1:.2f}s)")
-                sys.stdout.flush()
 
             # Pass 2: Handle method call assignments using types from pass 1
-            logger.info("        [TypeInference]   - Phase: Complex Assignments")
-            sys.stdout.flush()
-            t2 = time.time()
             self._traverse_for_assignments_complex(
                 caller_node, local_var_types, module_qn, visited
             )
-            if time.time() - t2 > 0.5:
-                logger.info(f"      [TypeInference] Slow complex traverse ({time.time() - t2:.2f}s)")
-                sys.stdout.flush()
 
             # Handle loop variables in comprehensions and for loops
-            logger.info("        [TypeInference]   - Phase: Loop Variables")
-            sys.stdout.flush()
             self._infer_loop_variable_types(caller_node, local_var_types, module_qn)
 
             # Handle instance variables like self.repo
-            logger.info("        [TypeInference]   - Phase: Instance Variables")
-            sys.stdout.flush()
             self._infer_instance_variable_types(caller_node, local_var_types, module_qn, visited)
 
         except Exception as e:
             logger.debug(f"Failed to build local variable type map: {e}")
-
-        elapsed = time.time() - start_time
-        logger.info(f"        [TypeInference] build_local_variable_type_map EXIT for {module_qn} (took {elapsed:.2f}s)")
-        import sys
-        sys.stdout.flush()
 
         return local_var_types
 
@@ -190,16 +159,11 @@ class TypeInferenceEngine:
         if not params_node:
             return
 
-        import sys
         for i, param in enumerate(params_node.children):
             if param.type == "identifier":
                 param_text = param.text
                 if param_text is not None:
                     param_name = param_text.decode("utf8")
-                    
-                    # LOGGING for potential O(N*M) bottleneck
-                    # logger.info(f"        [TypeInference]     - Param {i}: {param_name}")
-                    # sys.stdout.flush()
 
                     # Try to infer type from parameter name using available classes
                     inferred_type = self._infer_type_from_parameter_name(
@@ -411,16 +375,10 @@ class TypeInferenceEngine:
     ) -> None:
         """Infer types for instance variables by analyzing assignments."""
         # Look for assignments like self.repo = Repository() in the current method
-        logger.info("        [TypeInference]     - _analyze_self_assignments(caller_node)")
-        sys.stdout.flush()
         self._analyze_self_assignments(caller_node, local_var_types, module_qn, visited)
 
         # Also look for instance variable assignments in the class's __init__ method
-        logger.info("        [TypeInference]     - _analyze_class_init_assignments")
-        sys.stdout.flush()
         self._analyze_class_init_assignments(caller_node, local_var_types, module_qn, visited)
-        logger.info("        [TypeInference]     - instance variables complete")
-        sys.stdout.flush()
 
     def _analyze_class_init_assignments(
         self, caller_node: Node, local_var_types: dict[str, str], module_qn: str, visited: set[str] | None = None
@@ -501,14 +459,9 @@ class TypeInferenceEngine:
     ) -> None:
         """Analyze assignments to self.attribute to determine instance variable types."""
         stack: list[Node] = [node]
-        count = 0
 
         while stack:
             current = stack.pop()
-            count += 1
-            if count % 1000 == 0:
-                logger.info(f"        [TypeInference]       - Analyzed {count} nodes in _analyze_self_assignments...")
-                sys.stdout.flush()
 
             if current.type == "assignment":
                 left_node = current.child_by_field_name("left")

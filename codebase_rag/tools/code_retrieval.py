@@ -20,8 +20,9 @@ class CodeRetriever:
         logger.info(f"[CodeRetriever] Searching for: {qualified_name}")
 
         query = """
-            MATCH (n) WHERE n.qualified_name = $qn
+            MATCH (n) WHERE n.qualified_name = $qn AND n._repo_path = $repo_path
             OPTIONAL MATCH (m:Module)-[*]-(n)
+            WHERE m._repo_path = $repo_path
             RETURN n.name AS name, n.start_line AS start, n.end_line AS end, m.path AS path, n.docstring AS docstring
             LIMIT 1
         """

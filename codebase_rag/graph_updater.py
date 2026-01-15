@@ -567,7 +567,7 @@ class GraphUpdater:
         logger.debug(f"  Progress: {total_files}/{total_files} files processed (100.0%)")
 
     def _generate_semantic_embeddings(self) -> None:
-        """Generate and store semantic embeddings for functions and methods."""
+        """Generate and store semantic embeddings for functions, methods and classes."""
         logger.info("--- Starting Pass 4: Generating semantic embeddings ---")
 
         if not has_semantic_dependencies():
@@ -580,22 +580,23 @@ class GraphUpdater:
             from .embedder import embed_code_batch
             from .vector_store import batch_store_embeddings
 
-            # Query database for all Function and Method nodes in the current repo
+            # Query database for all Function, Method and Class nodes in the current repo
+            # Use variable length path to find the module containing the entity
             query = """
-            MATCH (m:Module)-[:DEFINES]->(n)
-            WHERE (n:Function OR n:Method) AND n._repo_path = $repo_path
-            RETURN id(n) AS node_id, n.qualified_name AS qualified_name,
+            MATCH (m:Module)-[:DEFINES|CONTAINS*..5]->(n)
+            WHERE (n:Function OR n:Method OR n:Class) AND n._repo_path = $repo_path
+            RETURN DISTINCT id(n) AS node_id, n.qualified_name AS qualified_name,
                    n.start_line AS start_line, n.end_line AS end_line,
                    m.path AS path
             """
 
             params = {"repo_path": str(self.repo_path)}
-            logger.info("  [Pass 4] Fetching functions and methods from Memgraph...")
+            logger.info("  [Pass 4] Fetching functions, methods and classes from Memgraph...")
 
             results = self.ingestor._execute_query(query, params)
 
             if not results:
-                logger.info("✓ [Pass 4] No functions or methods found for embedding generation")
+                logger.info("✓ [Pass 4] No embeddable items found for embedding generation")
                 return
 
             total_count = len(results)
@@ -660,7 +661,7 @@ class GraphUpdater:
     def _extract_source_code(
         self, qualified_name: str, file_path: str, start_line: int, end_line: int
     ) -> str | None:
-        """Extract source code for a function/method from cached AST or file."""
+        """Extract source code for a function, method or class from cached AST or file."""
         if not file_path or not start_line or not end_line:
             return None
 

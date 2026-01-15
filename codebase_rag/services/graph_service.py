@@ -86,7 +86,7 @@ class MemgraphIngestor:
         self.node_buffer: list[tuple[str, dict[str, Any]]] = []
         self.relationship_buffer: list[tuple[tuple, str, tuple, dict | None]] = []
         # Store repo_path as a normalized absolute path string
-        self.repo_path = str(Path(repo_path or ".").resolve())
+        self.repo_path = str(Path(repo_path or ".").expanduser().resolve())
         self.unique_constraints = {
             "Project": "name",
             "Package": "qualified_name",
@@ -463,7 +463,14 @@ class MemgraphIngestor:
         logger.info("--- Flushing complete. ---")
 
     def fetch_all(self, query: str, params: dict[str, Any] | None = None) -> list:
-        """Executes a query and fetches all results."""
+        """Executes a query and fetches all results.
+        
+        Automatically includes 'repo_path' in params for repository isolation.
+        """
+        params = params or {}
+        if "repo_path" not in params:
+            params["repo_path"] = self.repo_path
+            
         logger.debug(f"Executing fetch query: {query} with params: {params}")
         return self._execute_query(query, params)
 

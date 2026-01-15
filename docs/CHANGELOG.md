@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-01-14
+
+### Iterative Retrieval & Deep Context Awareness 🧠
+- **Implemented Iterative Semantic Seed Strategy** - Added an automated retry loop (up to 3 rounds) that uses the LLM to identify "Missing Concepts" when context is insufficient, triggering recursive searches to fill knowledge gaps.
+- **Expanded Semantic Coverage to Classes** - Pass 4 ingestion now includes `Class` nodes in the vector database, allowing the RAG engine to find high-level architectural components via natural language.
+- **Optimized Nested Symbol Resolution** - Integrated variable-length Cypher paths (`-[:DEFINES|CONTAINS*..5]->`) into retrieval queries to correctly locate source files for methods or classes nested deeply within modules.
+- **Restored Search Visibility** - Re-introduced detailed telemetry for keyword-based seed discovery and graph expansion counts, providing clear logs for how the iterative rounds traverse the codebase.
+- **Configurable Retrieval Depth** - Exposed `max_retries` as a parameter in the `query_codebase` MCP tool to allow users to control the trade-off between search depth and latency.
+
 ## 2026-01-09
 
 ### Type Inference Recursion & Phase 4 Optimization 🔧
@@ -7,6 +16,7 @@
 - **Restored & Optimized Phase 4 (Semantic Embeddings)** - Re-enabled and optimized semantic embedding generation using batch processing for both Local and Cloud providers, significantly reducing ingestion time.
 - **Enhanced Ingestion Memory Efficiency** - Introduced module-level instance variable caching and batch upserts to Qdrant to handle large repositories like `addibase` without OOM.
 - **Cleaned Debug Instrumentation** - Removed verbose log statements and manual flushing added during the hang investigation for cleaner production output.
+- **Strict Repository Isolation** - Standardized `repo_path` resolution using absolute paths with home expansion (`~`) and enforced `_repo_path` filtering across all Memgraph queries. Updated LLM prompts with mandatory isolation rules and automated parameter injection in the database driver.
 
 ### Connection & Hangs Fixed 🔧
 - **Fixed cursor iteration hang** - Replaced `cursor.fetchall()` with `cursor.fetchone()` loop in all query execution methods (`_execute_query`, `_execute_batch_with_return`, `execute_read_query`) to prevent memory issues and timeouts with large result sets.

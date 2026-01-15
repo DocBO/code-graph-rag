@@ -118,6 +118,11 @@ def _build_tool_schema(name: str) -> dict[str, Any]:
                         "description": "RAG strategy. Defaults to semantic-seed-strategy.",
                         "default": "semantic-seed-strategy",
                     },
+                    "max_retries": {
+                        "type": "integer",
+                        "description": "Max number of retrieval rounds if context is insufficient.",
+                        "default": 2,
+                    },
                 },
                 "required": ["question"],
                 "additionalProperties": False,
@@ -240,6 +245,7 @@ class GraphCodeMCPContext:
         self,
         question: str,
         strategy: str = "semantic-seed-strategy",
+        max_retries: int = 2,
     ) -> dict[str, Any]:
         """Query the codebase using RAG with the specified strategy."""
 
@@ -249,7 +255,7 @@ class GraphCodeMCPContext:
         if strategy == "semantic-seed-strategy":
             logger.info(f"Running semantic seed strategy for question: {question}")
             response_text = await run_semantic_seed_strategy(
-                question, str(self.default_repo)
+                question, str(self.default_repo), max_retries=max_retries
             )
             return {
                 "question": question,

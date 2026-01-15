@@ -96,7 +96,7 @@ def _fetch_node_location(node_id: int, repo_path: str) -> dict[str, Any] | None:
     query = """
     MATCH (n)
     WHERE id(n) = $node_id AND n._repo_path = $repo_path
-    OPTIONAL MATCH (m:Module)-[:DEFINES]->(n)
+    OPTIONAL MATCH (m:Module)-[:DEFINES|CONTAINS*..5]->(n)
     RETURN labels(n) AS labels,
            n.qualified_name AS qualified_name,
            n.name AS name,
@@ -164,69 +164,50 @@ def _collect_sources(
     return sources
 
 
-async def run_semantic_seed_strategy(
-    question: str,
-    repo_path: str,
-    *,
-    top_k: int = 10,
-    max_neighbors: int = 75,
-    synthesizer_factory: Callable[[], Any] = create_context_synthesizer,
-) -> str:
-    if not question.strip():
-        return "Please provide a question after `/semantic-seed-strategy`."
-
-    # 1. Semantic Search for seeds
-    results = await semantic_code_search_async(
-        question, top_k=top_k, repo_path=repo_path
-    )
-    
-    # 2. Keyword Search for additional seeds (fallback/supplement)
-    # Look for capitalized words that might be class/function names
-    potential_keywords = re.findall(r"\b[A-Z][a-zA-Z0-9_]+\b", question)
-    keyword_hits = []
-    if potential_keywords:
-        logger.info(f"Searching for keyword seeds: {potential_keywords}")
-        placeholders = ", ".join(f"${i}" for i in range(len(potential_keywords)))
-        kw_query = f"""
-        MATCH (n)
-        WHERE (n.name IN [{placeholders}] OR n.qualified_name IN [{placeholders}])
-          AND n._repo_path = $repo_path
-        RETURN id(n) AS node_id, n.qualified_name AS qualified_name, 
-               n.name AS name, labels(n) AS type
-        LIMIT 5
-        """
-        kw_params = {str(i): kw for i, kw in enumerate(potential_keywords)}
-        kw_params["repo_path"] = repo_path
-        
-        kw_results = execute_read_query(
-            host=settings.MEMGRAPH_HOST,
-            port=settings.MEMGRAPH_PORT,
-            query=kw_query,
-            params=kw_params
+async def _gather_seeds(queries: list[str], repo_path: str, top_k: int) -> list[SeedHit]:
+    """Gather semantic and keyword seeds for a set of queries."""
+    all_hits = {}  # node_id -> hit_dict
+    for query in queries:
+        # Semantic search
+        sem_results = await semantic_code_search_async(
+            query, top_k=top_k, repo_path=repo_path
         )
-        for res in kw_results:
-            keyword_hits.append({
-                "node_id": res["node_id"],
-                "qualified_name": res["qualified_name"],
-                "name": res["name"],
-                "type": res["type"][0] if res["type"] else "Unknown",
-                "score": 1.0  # Exact keyword match gets high score
-            })
-            logger.info(f"  Found keyword seed: {res['name']} ({res['node_id']})")
+        for res in sem_results:
+            all_hits[res["node_id"]] = res
 
-    # Combine results, avoiding duplicates
-    combined_results = {res["node_id"]: res for res in results}
-    for kw_res in keyword_hits:
-        if kw_res["node_id"] not in combined_results:
-            combined_results[kw_res["node_id"]] = kw_res
+        # Keyword search
+        potential_keywords = re.findall(r"\b[A-Z][a-zA-Z0-9_]+\b", query)
+        if potential_keywords:
+            logger.debug(f"Searching for keyword seeds in round: {potential_keywords}")
+            placeholders = ", ".join(f"${i}" for i in range(len(potential_keywords)))
+            kw_query = f"""
+            MATCH (n)
+            WHERE (n.name IN [{placeholders}] OR n.qualified_name IN [{placeholders}])
+              AND n._repo_path = $repo_path
+            RETURN id(n) AS node_id, n.qualified_name AS qualified_name, 
+                   n.name AS name, labels(n) AS type
+            LIMIT 5
+            """
+            kw_params = {str(i): kw for i, kw in enumerate(potential_keywords)}
+            kw_params["repo_path"] = repo_path
+            kw_results = execute_read_query(
+                host=settings.MEMGRAPH_HOST,
+                port=settings.MEMGRAPH_PORT,
+                query=kw_query,
+                params=kw_params,
+            )
+            for res in kw_results:
+                if res["node_id"] not in all_hits:
+                    logger.info(f"  Found keyword seed: {res['name']} ({res['node_id']})")
+                    all_hits[res["node_id"]] = {
+                        "node_id": res["node_id"],
+                        "qualified_name": res["qualified_name"],
+                        "name": res["name"],
+                        "type": res["type"][0] if res["type"] else "Unknown",
+                        "score": 1.0,
+                    }
 
-    if not combined_results:
-        return (
-            f"No semantic or keyword matches found for: '{question}'. "
-            "Try a more specific intent query."
-        )
-
-    seed_hits = [
+    return [
         SeedHit(
             node_id=hit["node_id"],
             qualified_name=hit.get("qualified_name") or "",
@@ -234,56 +215,88 @@ async def run_semantic_seed_strategy(
             node_type=hit.get("type") or "Unknown",
             score=float(hit.get("score") or 0.0),
         )
-        for hit in combined_results.values()
+        for hit in all_hits.values()
     ]
-    depth = _choose_expansion_depth([hit.score for hit in seed_hits])
-    logger.info(
-        "Semantic seed strategy: {} seed hits ({} from keywords), chosen depth {}",
-        len(seed_hits),
-        len(keyword_hits),
-        depth,
-    )
 
-    node_ids = [hit.node_id for hit in seed_hits]
-    placeholders = ", ".join(f"${i}" for i in range(len(node_ids)))
-    limit = max(10, min(max_neighbors, 20 + len(node_ids) * 10))
-    expansion_query = f"""
-    MATCH (seed)
-    WHERE id(seed) IN [{placeholders}] AND seed._repo_path = $repo_path
-    MATCH path=(seed)-[rels*1..{depth}]-(neighbor)
-    WHERE neighbor._repo_path = $repo_path
-    RETURN id(seed) AS seed_id,
-           coalesce(seed.qualified_name, seed.name) AS seed_name,
-           id(neighbor) AS neighbor_id,
-           coalesce(neighbor.qualified_name, neighbor.name) AS neighbor_name,
-           labels(neighbor) AS neighbor_labels,
-           [rel IN rels | type(rel)] AS relationship_types
-    LIMIT $limit
-    """
 
-    params = {str(i): node_id for i, node_id in enumerate(node_ids)}
-    params["repo_path"] = repo_path
-    params["limit"] = limit
+def _extract_sufficiency_info(response: str) -> tuple[str, list[str]]:
+    """Extract sufficiency status and missing concepts from response."""
+    status = "Sufficient"
+    missing = []
 
-    logger.info(
-        "Graph expansion query (depth={}, limit={}): {}",
-        depth,
-        limit,
-        expansion_query.strip().replace("\n", " "),
+    # Context Sufficiency: [Sufficient/Partial/Insufficient]
+    status_match = re.search(
+        r"Context Sufficiency:\s*(Sufficient|Partial|Insufficient|None Detected)",
+        response,
+        re.IGNORECASE,
     )
-    expansions_raw = execute_read_query(
-        host=settings.MEMGRAPH_HOST,
-        port=settings.MEMGRAPH_PORT,
-        query=expansion_query,
-        params=params,
-    )
-    if len(expansions_raw) < 5 and depth < 3:
-        depth += 1
+    if status_match:
+        status = status_match.group(1).capitalize()
+
+    # Missing: [List exact symbol names, concepts, or missing implementation details, or 'None']
+    missing_match = re.search(r"Missing:\s*(.*)", response, re.IGNORECASE)
+    if missing_match:
+        concepts_str = missing_match.group(1).strip()
+        if concepts_str.lower() != "none" and concepts_str:
+            # Handle comma separated or bulleted lists
+            parts = re.split(r",|\*|\s*-\s*", concepts_str)
+            missing = [p.strip() for p in parts if p.strip()]
+
+    return status, missing
+
+
+async def run_semantic_seed_strategy(
+    question: str,
+    repo_path: str,
+    *,
+    top_k: int = 10,
+    max_neighbors: int = 75,
+    max_retries: int = 2,
+    synthesizer_factory: Callable[[], Any] = create_context_synthesizer,
+) -> str:
+    if not question.strip():
+        return "Please provide a question after `/semantic-seed-strategy`."
+
+    current_search_queries = [question]
+    accumulated_seed_hits: dict[int, SeedHit] = {}
+    accumulated_neighbor_ids: set[int] = set()
+    all_expansions: list[ExpansionHit] = []
+    
+    last_response = ""
+
+    for attempt in range(max_retries + 1):
         logger.info(
-            "Low expansion count ({}). Retrying with depth {}",
-            len(expansions_raw),
-            depth,
+            "Semantic Seed Strategy: Round {}/{} ({} search queries)",
+            attempt + 1,
+            max_retries + 1,
+            len(current_search_queries),
         )
+
+        # 1. Gather seeds for current queries
+        new_seeds = await _gather_seeds(current_search_queries, repo_path, top_k)
+        
+        # Keep only truly new seeds
+        truly_new_seeds = [s for s in new_seeds if s.node_id not in accumulated_seed_hits]
+        for s in truly_new_seeds:
+            accumulated_seed_hits[s.node_id] = s
+
+        if not truly_new_seeds and attempt > 0:
+            logger.info("  No new seeds found in this round. Stopping.")
+            break
+            
+        if not accumulated_seed_hits:
+             return (
+                f"No semantic or keyword matches found for: '{question}'. "
+                "Try a more specific intent query."
+            )
+
+        # 2. Expand from all seeds (potentially deeper if context is thin)
+        seed_hits = list(accumulated_seed_hits.values())
+        depth = _choose_expansion_depth([hit.score for hit in seed_hits])
+        node_ids = [hit.node_id for hit in seed_hits]
+        placeholders = ", ".join(f"${i}" for i in range(len(node_ids)))
+        limit = max(10, min(max_neighbors, 20 + len(node_ids) * 10))
+        
         expansion_query = f"""
         MATCH (seed)
         WHERE id(seed) IN [{placeholders}] AND seed._repo_path = $repo_path
@@ -297,89 +310,117 @@ async def run_semantic_seed_strategy(
                [rel IN rels | type(rel)] AS relationship_types
         LIMIT $limit
         """
+
+        params = {str(i): node_id for i, node_id in enumerate(node_ids)}
+        params["repo_path"] = repo_path
+        params["limit"] = limit
+
         logger.info(
-            "Graph expansion query (depth={}, limit={}): {}",
+            "  Graph expansion query (round={}, depth={}, limit={}): symbols={}",
+            attempt + 1,
             depth,
             limit,
-            expansion_query.strip().replace("\n", " "),
+            [h.name for h in seed_hits[:5]] + (["..."] if len(seed_hits) > 5 else []),
         )
+
         expansions_raw = execute_read_query(
             host=settings.MEMGRAPH_HOST,
             port=settings.MEMGRAPH_PORT,
             query=expansion_query,
             params=params,
         )
-    logger.info(
-        "Graph expansion results: {} paths for {} seeds at depth {}",
-        len(expansions_raw),
-        len(seed_hits),
-        depth,
-    )
-    expansions = [
-        ExpansionHit(
-            seed_id=row["seed_id"],
-            seed_name=row.get("seed_name") or f"node:{row['seed_id']}",
-            neighbor_id=row["neighbor_id"],
-            neighbor_name=row.get("neighbor_name") or f"node:{row['neighbor_id']}",
-            neighbor_labels=row.get("neighbor_labels") or [],
-            relationship_types=row.get("relationship_types") or [],
-        )
-        for row in expansions_raw
-    ]
-    seed_source_nodes = [
-        (hit.node_id, hit.qualified_name or hit.name or f"node:{hit.node_id}")
-        for hit in seed_hits
-        if hit.node_type in {"Function", "Method"}
-    ]
-    seed_sources = _collect_sources(
-        seed_source_nodes,
-        repo_path=repo_path,
-        max_items=min(3, len(seed_hits)),
-    )
-    neighbor_source_nodes = []
-    seen_neighbor_ids: set[int] = set()
-    for exp in expansions:
-        if exp.neighbor_id in seen_neighbor_ids:
-            continue
-        if not {"Function", "Method", "Class", "Module", "File"}.intersection(
-            exp.neighbor_labels
-        ):
-            continue
-        seen_neighbor_ids.add(exp.neighbor_id)
-        neighbor_source_nodes.append(
-            (
-                exp.neighbor_id,
-                exp.neighbor_name or f"node:{exp.neighbor_id}",
+
+        logger.info("  Found {} graph expansions.", len(expansions_raw))
+        
+        # Process expansions
+        new_expansions = []
+        for row in expansions_raw:
+            exp = ExpansionHit(
+                seed_id=row["seed_id"],
+                seed_name=row.get("seed_name") or f"node:{row['seed_id']}",
+                neighbor_id=row["neighbor_id"],
+                neighbor_name=row.get("neighbor_name") or f"node:{row['neighbor_id']}",
+                neighbor_labels=row.get("neighbor_labels") or [],
+                relationship_types=row.get("relationship_types") or [],
             )
-        )
-    neighbor_sources = _collect_sources(
-        neighbor_source_nodes,
-        repo_path=repo_path,
-        max_items=5,
-    )
+            new_expansions.append(exp)
+            accumulated_neighbor_ids.add(exp.neighbor_id)
+            
+        all_expansions = new_expansions # Refresh expansions with all seeds
 
-    context_blocks = [
-        f"Question: {question}",
-        f"Expansion depth: {depth}",
-        _format_seed_hits(seed_hits),
-        _format_expansions(expansions),
-        _format_sources("Seed source snippets", seed_sources),
-        _format_sources("Neighbor source snippets", neighbor_sources),
-    ]
-    context = "\n\n".join(context_blocks)
+        # 3. Collect sources
+        seed_source_nodes = [
+            (hit.node_id, hit.qualified_name or hit.name or f"node:{hit.node_id}")
+            for hit in seed_hits
+            if hit.node_type in {"Function", "Method", "Class"}
+        ]
+        seed_sources = _collect_sources(
+            seed_source_nodes,
+            repo_path=repo_path,
+            max_items=min(5 + attempt * 2, len(seed_hits)),
+        )
+        
+        neighbor_source_nodes = []
+        for exp in all_expansions:
+            if not {"Function", "Method", "Class", "Module", "File"}.intersection(
+                exp.neighbor_labels
+            ):
+                continue
+            neighbor_source_nodes.append(
+                (exp.neighbor_id, exp.neighbor_name or f"node:{exp.neighbor_id}")
+            )
+            
+        # Unique neighbor source nodes
+        unique_neighbor_nodes = []
+        seen_ids = set()
+        for nid, name in neighbor_source_nodes:
+            if nid not in seen_ids:
+                unique_neighbor_nodes.append((nid, name))
+                seen_ids.add(nid)
 
-    try:
-        synthesizer = synthesizer_factory()
-        prompt = (
-            "Use ONLY the following context to answer the user's question. "
-            "If the context is insufficient, say so.\n\n"
-            f"{context}"
+        neighbor_sources = _collect_sources(
+            unique_neighbor_nodes,
+            repo_path=repo_path,
+            max_items=5 + attempt * 5,
         )
-        result = await synthesizer.run(prompt)
-        return result.output
-    except Exception as e:
-        logger.error("Semantic seed strategy synthesis failed: {}", e, exc_info=True)
-        return (
-            "Semantic seed strategy ran, but answer synthesis failed. "
-            "Check logs for details."
-        )
+
+        # 4. Synthesize
+        context_blocks = [
+            f"Question: {question}",
+            f"Expansion depth: {depth}",
+            f"Retrieval round: {attempt + 1}",
+            _format_seed_hits(seed_hits),
+            _format_expansions(all_expansions),
+            _format_sources("Seed source snippets", seed_sources),
+            _format_sources("Neighbor source snippets", neighbor_sources),
+        ]
+        context = "\n\n".join(context_blocks)
+
+        try:
+            synthesizer = synthesizer_factory()
+            prompt = (
+                "Use ONLY the following context to answer the user's question. "
+                "If the context is insufficient, say so explicitly in the 'Context Sufficiency' section.\n\n"
+                f"{context}"
+            )
+            result = await synthesizer.run(prompt)
+            last_response = result.output
+            
+            # 5. Check sufficiency
+            status, missing_concepts = _extract_sufficiency_info(last_response)
+            logger.info("  Round {} sufficiency: {} (Missing: {})", attempt + 1, status, missing_concepts)
+            
+            if status == "Sufficient" or not missing_concepts:
+                break
+                
+            # Prepare for next round
+            current_search_queries = missing_concepts
+            
+        except Exception as e:
+            logger.error("  Synthesis round failed: {}", e)
+            if attempt == 0:
+                 return f"Semantic seed strategy failed: {e}"
+            break
+
+    return last_response
+

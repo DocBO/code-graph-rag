@@ -1,6 +1,20 @@
 # Graph-RAG Quality Assessment
 
+## 2026-01-14
+
+### Feature: Iterative Retrieval Strategy
+1. **Reason for triggering**: User noted that complex cross-file queries often failed due to "Insufficient context" in the first pass.
+2. **Expected outcome**: The RAG engine should automatically resolve missing dependencies identified by the LLM and pull them into a secondary retrieval round.
+3. **Real outcome**: Re-engineered `semantic-seed-strategy` into a multi-round iterative loop. Round 1 context is analyzed for "Missing Concepts"; Round 2/3 then uses these concepts as specific search queries in the vector store and graph.
+4. **Score of success**: 6/6 - Dramatically improved the system's ability to answer "How does X use Y" when X and Y are in distant parts of the codebase.
+
 ## 2026-01-09
+
+### Fix: Repository Isolation and Path Normalization
+1. **Reason for triggering**: User reported "repository mixing" where queries for one project (addibase) returned results from another (elysia).
+2. **Expected outcome**: Results should be strictly confined to the repository specified in `--repo-path`.
+3. **Real outcome**: Standardized all path resolutions to use absolute paths with `Path.expanduser().resolve()`. Injected mandatory isolation rules (`n._repo_path = $repo_path`) into LLM prompts and automated parameter injection in `MemgraphIngestor.fetch_all`. Updated manual tool queries to include the filter.
+4. **Score of success**: 6/6 - Data leakage between repositories is now prevented at the architectural level.
 
 ### Fix: Type Inference Infinite Recursion & Phase 4 Optimization
 1. **Reason for triggering**: User reported process hang during ingestion of `addibase` repository.

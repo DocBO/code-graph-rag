@@ -107,9 +107,9 @@ def create_enhanced_semantic_search_tool(repo_path: str | None = None, console: 
             response = "\n".join(response_lines)
             response += (
                 "\n\nYou can:\n"
-                "- Use 'get_function_source_by_id' with the node ID to view the source code\n"
+                "- Use 'get_source_by_id' with the node ID to view the source code\n"
                 "- Use 'query_codebase_knowledge_graph' to find related functions/classes\n"
-                "- Ask follow-up questions about these functions"
+                "- Ask follow-up questions about these items"
             )
             
             logger.info(f"Found {len(results)} semantic matches")

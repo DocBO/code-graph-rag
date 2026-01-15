@@ -18,7 +18,7 @@ from .tools.file_editor import FileEditor, create_file_editor_tool
 from .tools.file_reader import FileReader, create_file_reader_tool
 from .tools.file_writer import FileWriter, create_file_writer_tool
 from .tools.semantic_search import (
-    create_get_function_source_tool,
+    create_get_source_tool,
     create_semantic_search_tool,
 )
 from .tools.shell_command import ShellCommander, create_shell_command_tool
@@ -70,7 +70,7 @@ def initialize_services_and_agent(
     document_analyzer_tool = create_document_analyzer_tool(document_analyzer)
     semantic_search_tool = create_semantic_search_tool(repo_path=repo_path)
     enhanced_semantic_search_tool = create_enhanced_semantic_search_tool(repo_path=repo_path, console=console)
-    function_source_tool = create_get_function_source_tool(repo_path=repo_path)
+    get_source_tool = create_get_source_tool(repo_path=repo_path)
 
     rag_agent = create_rag_orchestrator(
         tools=[
@@ -84,7 +84,7 @@ def initialize_services_and_agent(
             document_analyzer_tool,
             semantic_search_tool,
             enhanced_semantic_search_tool,
-            function_source_tool,
+            get_source_tool,
         ]
     )
     return rag_agent

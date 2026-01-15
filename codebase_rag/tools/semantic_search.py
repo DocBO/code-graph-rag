@@ -13,7 +13,7 @@ _repo_path_context: str | None = None
 def _normalize_repo_path(repo_path: str | None) -> str | None:
     if repo_path is None:
         return None
-    return str(Path(repo_path).resolve())
+    return str(Path(repo_path).expanduser().resolve())
 
 def semantic_code_search(query: str, top_k: int = 5, repo_path: str | None = None) -> list[dict[str, Any]]:
     """
@@ -205,10 +205,11 @@ def get_function_source_code(node_id: int, repo_path: str | None = None) -> str 
         
         # Get node details including file path and line numbers using read-only query
         query = """
-        MATCH (m:Module)-[:DEFINES]->(n)
+        MATCH (m:Module)-[:DEFINES|CONTAINS*..5]->(n)
         WHERE id(n) = $node_id AND n._repo_path = $repo_path
         RETURN n.qualified_name AS qualified_name, n.start_line AS start_line, 
                n.end_line AS end_line, m.path AS path
+        LIMIT 1
         """
         
         results = execute_read_query(
@@ -291,28 +292,28 @@ def create_semantic_search_tool(repo_path: str | None = None) -> Tool:
     return Tool(semantic_search_functions, name="semantic_search_functions")
 
 
-def create_get_function_source_tool(repo_path: str | None = None) -> Tool:
+def create_get_source_tool(repo_path: str | None = None) -> Tool:
     """
-    Factory function to create the function source code retrieval tool.
+    Factory function to create the source code retrieval tool.
     Stores repo_path in module context for use in nested functions.
     """
     global _repo_path_context
     _repo_path_context = _normalize_repo_path(repo_path)
     
-    async def get_function_source_by_id(node_id: int) -> str:
+    async def get_source_by_id(node_id: int) -> str:
         """
-        Retrieve the complete source code for a function or method by its node ID.
+        Retrieve the complete source code for a function, method, or class by its node ID.
         
         Use this tool after semantic search to get the actual implementation
-        of functions you're interested in.
+        of symbols you're interested in.
         
         Args:
-            node_id: The Memgraph node ID of the function/method
+            node_id: The Memgraph node ID of the symbol
             
         Returns:
-            The complete source code of the function/method
+            The complete source code of the symbol
         """
-        logger.info(f"[Tool:GetFunctionSource] Retrieving source for node ID: {node_id}")
+        logger.info(f"[Tool:GetSource] Retrieving source for node ID: {node_id}")
         
         source_code = get_function_source_code(node_id)
         
@@ -321,4 +322,4 @@ def create_get_function_source_tool(repo_path: str | None = None) -> Tool:
         
         return f"Source code for node ID {node_id}:\n\n```\n{source_code}\n```"
     
-    return Tool(get_function_source_by_id, name="get_function_source_by_id")
+    return Tool(get_source_by_id, name="get_source_by_id")

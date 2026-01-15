@@ -49,7 +49,10 @@ Relationships (source)-[REL_TYPE]->(target):
 # ======================================================================================
 CONTEXT_SYNTHESIS_PROMPT = """
 You are an expert assistant. Answer the user's question using ONLY the provided context.
-If the context is insufficient, say so and explain what is missing.
+
+IMPORTANT: At the end of your response, you MUST include a 'Context Sufficiency' section with this EXACT format:
+Context Sufficiency: [Sufficient/Partial/Insufficient]
+Missing: [List exact symbol names, concepts, or missing implementation details, or 'None']
 """
 
 # ======================================================================================
@@ -143,25 +146,32 @@ Your goal is to return the `name`, `path`, and `qualified_name` of the found nod
 // "Find all prefect flows" or "what are the workflows?" or "show me the tasks"
 // Use the 'IN' operator to check the 'decorators' list property.
 MATCH (n:Function|Method)
-WHERE ANY(d IN n.decorators WHERE toLower(d) IN ['flow', 'task'])
+WHERE n._repo_path = $repo_path AND ANY(d IN n.decorators WHERE toLower(d) IN ['flow', 'task'])
 RETURN n.name AS name, n.qualified_name AS qualified_name, labels(n) AS type
+
+**3. Repository Isolation (MANDATORY)**
+- The database contains info from multiple repositories.
+- EVERY node has a property `_repo_path` (absolute path to repository root).
+- YOU MUST ALWAYS include `n._repo_path = $repo_path` in your WHERE clause for EVERY node variable you match.
+- This ensures you only return results for the current project.
+- The `$repo_path` parameter is ALWAYS available.
 
 **Pattern: Finding Content by Path (Robustly)**
 // "what is in the 'workflows/src' directory?" or "list files in workflows"
 // Use `STARTS WITH` for path matching.
 MATCH (n)
-WHERE n.path IS NOT NULL AND n.path STARTS WITH 'workflows'
+WHERE n._repo_path = $repo_path AND n.path IS NOT NULL AND n.path STARTS WITH 'workflows'
 RETURN n.name AS name, n.path AS path, labels(n) AS type
 
 **Pattern: Keyword & Concept Search (Fallback for general terms)**
 // "find things related to 'database'"
 MATCH (n)
-WHERE toLower(n.name) CONTAINS 'database' OR (n.qualified_name IS NOT NULL AND toLower(n.qualified_name) CONTAINS 'database')
+WHERE n._repo_path = $repo_path AND (toLower(n.name) CONTAINS 'database' OR (n.qualified_name IS NOT NULL AND toLower(n.qualified_name) CONTAINS 'database'))
 RETURN n.name AS name, n.qualified_name AS qualified_name, labels(n) AS type
 
 **Pattern: Finding a Specific File**
 // "Find the main README.md"
-MATCH (f:File) WHERE toLower(f.name) = 'readme.md' AND f.path = 'README.md'
+MATCH (f:File) WHERE f._repo_path = $repo_path AND toLower(f.name) = 'readme.md' AND f.path = 'README.md'
 RETURN f.path as path, f.name as name, labels(f) as type
 
 **4. Output Format**
@@ -191,30 +201,30 @@ You are a Neo4j Cypher query generator. You ONLY respond with a valid Cypher que
 *   **Natural Language:** "Find the main README file"
 *   **Cypher Query (no semicolon):**
     ```
-    MATCH (f:File) WHERE toLower(f.name) CONTAINS 'readme' RETURN f.path AS path, f.name AS name, labels(f) AS type
+    MATCH (f:File) WHERE f._repo_path = $repo_path AND toLower(f.name) CONTAINS 'readme' RETURN f.path AS path, f.name AS name, labels(f) AS type
     ```
 
 *   **Natural Language:** "Find all python files"
 *   **Cypher Query (no semicolon, note the '.' in extension):**
     ```
-    MATCH (f:File) WHERE f.extension = '.py' RETURN f.path AS path, f.name AS name, labels(f) AS type
+    MATCH (f:File) WHERE f._repo_path = $repo_path AND f.extension = '.py' RETURN f.path AS path, f.name AS name, labels(f) AS type
     ```
 
 *   **Natural Language:** "show me the tasks"
 *   **Cypher Query (no semicolon):**
     ```
-    MATCH (n:Function|Method) WHERE 'task' IN n.decorators RETURN n.qualified_name AS qualified_name, n.name AS name, labels(n) AS type
+    MATCH (n:Function|Method) WHERE n._repo_path = $repo_path AND 'task' IN n.decorators RETURN n.qualified_name AS qualified_name, n.name AS name, labels(n) AS type
     ```
 
 *   **Natural Language:** "list files in the services folder"
 *   **Cypher Query (no semicolon):**
     ```
-    MATCH (f:File) WHERE f.path STARTS WITH 'services' RETURN f.path AS path, f.name AS name, labels(f) AS type
+    MATCH (f:File) WHERE f._repo_path = $repo_path AND f.path STARTS WITH 'services' RETURN f.path AS path, f.name AS name, labels(f) AS type
     ```
 
 *   **Natural Language:** "Find just one file to test"
 *   **Cypher Query (no semicolon):**
     ```
-    MATCH (f:File) RETURN f.path as path, f.name as name, labels(f) as type LIMIT 1
+    MATCH (f:File) WHERE f._repo_path = $repo_path RETURN f.path as path, f.name as name, labels(f) as type LIMIT 1
     ```
 """

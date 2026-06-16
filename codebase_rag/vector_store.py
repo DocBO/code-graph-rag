@@ -335,16 +335,14 @@ elif _use_remote_qdrant():
             if settings.QDRANT_API_KEY:
                 headers["api-key"] = settings.QDRANT_API_KEY
 
-            # Delete all points using points selector with empty list
-            url = _build_qdrant_url(f"/collections/{collection_name}/points/delete")
-            payload = {"points": []}  # Empty list means match all/truncate
+            delete_url = _build_qdrant_url(f"/collections/{collection_name}")
+            resp = httpx.delete(delete_url, headers=headers, timeout=10.0)
+            if resp.status_code >= 400 and resp.status_code != 404:
+                logger.warning(f"Failed to delete Qdrant collection: {resp.text}")
+                raise VectorStoreError(f"Failed to delete collection: {resp.text}")
 
-            resp = httpx.post(url, json=payload, headers=headers, timeout=10.0)
-            if resp.status_code >= 400:
-                logger.warning(f"Failed to clean Qdrant collection: {resp.text}")
-                raise VectorStoreError(f"Failed to clean collection: {resp.text}")
-
-            logger.info(f"Qdrant collection cleaned via HTTP: {collection_name}")
+            logger.info(f"Qdrant collection deleted: {collection_name}")
+            _ensure_collection_exists(collection_name)
         except Exception as e:
             logger.warning(f"Failed to clean Qdrant collection: {e}")
             raise

@@ -56,7 +56,8 @@ try:
         batch_size=100,
     )
     print(f"    Default repo_path: {ingestor_default.repo_path}")
-    assert ingestor_default.repo_path == ".", "Default repo_path should be '.'"
+    expected_default = str(Path(".").expanduser().resolve())
+    assert ingestor_default.repo_path == expected_default, f"Default repo_path should be resolved CWD, got: {ingestor_default.repo_path}"
     filter_default = ingestor_default._get_repo_filter("n")
     print(f"    Default filter: '{filter_default}' (should be empty)")
     assert filter_default == "", "Default repo_path should return empty filter"

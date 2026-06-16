@@ -1,5 +1,9 @@
 # Changelog
 
+## 2026-01-19
+
+- **Added Collection Cleanup Utility** - Created `utils/delete_all_collections.py` to quickly remove all repository-specific vector collections from Qdrant, facilitating easier troubleshooting of dimension mismatches.
+
 ## 2026-01-14
 
 ### Iterative Retrieval & Deep Context Awareness 🧠

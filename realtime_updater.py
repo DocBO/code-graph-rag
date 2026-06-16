@@ -180,6 +180,7 @@ def start_watcher(
     port: int,
     batch_size: int | None = None,
     debounce: int = 20,
+    skip_initial: bool = False,
 ) -> None:
     """Initializes the graph updater and starts the file system watcher."""
     repo_path_obj = Path(repo_path).resolve()
@@ -195,11 +196,12 @@ def start_watcher(
     ) as ingestor:
         updater = GraphUpdater(ingestor, repo_path_obj, parsers, queries)
 
-        # --- Perform an initial full scan to build the complete context ---
-        # This is essential for the real-time updates to have a valid baseline.
-        logger.info("Performing initial full codebase scan...")
-        updater.run()
-        logger.success("Initial scan complete. Starting real-time watcher.")
+        if skip_initial:
+            logger.info("Skipping initial full scan (--no-update). Only watching for changes.")
+        else:
+            logger.info("Performing initial full codebase scan...")
+            updater.run()
+            logger.success("Initial scan complete. Starting real-time watcher.")
 
         event_handler = CodeChangeEventHandler(updater, debounce_seconds=debounce)
         observer = Observer()
@@ -257,8 +259,19 @@ if __name__ == "__main__":
         default=None,
         help="Number of buffered nodes/relationships before flushing to Memgraph",
     )
+    parser.add_argument(
+        "--no-update",
+        action="store_true",
+        default=False,
+        help="Skip the initial full scan; only watch for incremental changes",
+    )
     args = parser.parse_args()
 
     start_watcher(
-        args.repo_path, args.host, args.port, args.batch_size, debounce=args.debounce
+        args.repo_path,
+        args.host,
+        args.port,
+        args.batch_size,
+        debounce=args.debounce,
+        skip_initial=args.no_update,
     )

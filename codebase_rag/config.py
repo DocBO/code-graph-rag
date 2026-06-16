@@ -89,6 +89,7 @@ class AppConfig(BaseSettings):
     EMBED_API_KEY: str | None = None
     EMBED_MODEL: str | None = None
     EMBED_DIMENSION: int | None = None
+    EMBED_MAX_CHUNK_SIZE: int = 8000
     QDRANT_HOST: str | None = None
     QDRANT_PORT: int | None = None
     QDRANT_API_KEY: str | None = None
@@ -204,12 +205,12 @@ BASE_IGNORE_PATTERNS = {
     ".uv-cache",
     "static",
     "tests",
-    "docs"
+    # "docs"
 }
 
 # Combine base ignores with optional user-provided directories (comma separated)
 IGNORE_PATTERNS = BASE_IGNORE_PATTERNS | _parse_ignore_dirs(settings.INGEST_IGNORE_DIRS)
-IGNORE_SUFFIXES = {".tmp", "~", ".md", ".txt"}
+IGNORE_SUFFIXES = {".tmp"} # "~", ".md", ".txt"}
 
 
 # --- Edit Operation Constants ---

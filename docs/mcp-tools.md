@@ -48,8 +48,8 @@ uv run python start_mcp_with_watcher.py ~/path/to/repo
 # With custom Memgraph settings
 uv run python start_mcp_with_watcher.py ~/path/to/repo --host localhost --port 7687 --batch-size 1000
 
-# With custom debounce delay for real-time updates
-uv run python start_mcp_with_watcher.py ~/path/to/repo --debounce 30
+# With custom debounce delay for real-time updates and no initial update
+uv run python start_mcp_with_watcher.py ~/path/to/repo --debounce 30 --transport http --no-update --batch-size 2000
 ```
 
 The script automatically:

@@ -28,6 +28,38 @@ import sys
 from pathlib import Path
 
 
+def _run_embedding_only(
+    repo_path: Path, host: str, port: int, batch_size: int | None
+) -> None:
+    """Delete all existing embeddings and regenerate from scratch."""
+    from codebase_rag.config import settings
+    from codebase_rag.graph_updater import GraphUpdater
+    from codebase_rag.parser_loader import load_parsers
+    from codebase_rag.services.graph_service import MemgraphIngestor
+    from codebase_rag.vector_store import clean_collection
+
+    print("🧹 Cleaning existing embeddings...")
+    clean_collection(repo_path)
+    print("✓ Embeddings cleaned")
+
+    effective_batch_size = settings.resolve_batch_size(batch_size)
+
+    print("🔌 Connecting to Memgraph...")
+    with MemgraphIngestor(
+        host=host,
+        port=port,
+        batch_size=effective_batch_size,
+        repo_path=repo_path,
+    ) as ingestor:
+        parsers, queries = load_parsers()
+        updater = GraphUpdater(ingestor, repo_path, parsers, queries)
+
+        print("🔢 Regenerating embeddings from Memgraph data...")
+        updater._generate_semantic_embeddings()
+        print("✓ Embedding regeneration complete")
+        print()
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Start Graph-Code MCP server with real-time watcher",
@@ -74,6 +106,18 @@ Examples:
         default=20,
         help="Debounce delay for real-time updates in seconds (default: 20)",
     )
+    parser.add_argument(
+        "--no-update",
+        action="store_true",
+        default=False,
+        help="Skip the initial full codebase scan; only watch for incremental changes",
+    )
+    parser.add_argument(
+        "--only-embedding",
+        action="store_true",
+        default=False,
+        help="Skip ingestion and watcher; only delete and regenerate embeddings, then start MCP server",
+    )
 
     # MCP server transport settings
     parser.add_argument(
@@ -110,62 +154,73 @@ Examples:
         print(f"Error: Repository path does not exist: {repo_path}", file=sys.stderr)
         sys.exit(1)
 
-    print(f"🚀 Starting Graph-Code MCP Server with Real-Time Watcher")
+    if args.only_embedding:
+        print("🎯 Starting Graph-Code MCP Server (embedding-only mode)")
+    else:
+        print("🚀 Starting Graph-Code MCP Server with Real-Time Watcher")
     print(f"📁 Repository: {repo_path}")
     print(f"🔗 Memgraph: {args.host}:{args.port}")
-    print(f"⏱️  Debounce: {args.debounce}s")
+    if not args.only_embedding:
+        print(f"⏱️  Debounce: {args.debounce}s")
     print()
 
-    # Start the real-time updater in the background
-    print("Starting real-time updater in background...")
-    updater_cmd = [
-        sys.executable,
-        "-m",
-        "codebase_rag.main" if repo_path.parent.name == "code-graph-rag" else "realtime_updater",
-    ]
+    updater_process = None
 
-    # Determine the correct command
-    try:
-        # Try using the main module
+    if args.only_embedding:
+        _run_embedding_only(repo_path, args.host, args.port, args.batch_size)
+    else:
+        # Start the real-time updater in the background
+        print("Starting real-time updater in background...")
         updater_cmd = [
             sys.executable,
-            "realtime_updater.py",
-            str(repo_path),
-            "--host",
-            args.host,
-            "--port",
-            str(args.port),
-            "--debounce",
-            str(args.debounce),
+            "-m",
+            "codebase_rag.main" if repo_path.parent.name == "code-graph-rag" else "realtime_updater",
         ]
-    except Exception:
-        pass
 
-    try:
-        updater_process = subprocess.Popen(
-            updater_cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            bufsize=1,  # Line buffering
-        )
-        print(f"✓ Real-time updater started (PID: {updater_process.pid})")
-        
-        # Start a thread to capture and display updater logs
-        def _capture_updater_logs():
-            """Capture logs from the background updater process."""
-            if updater_process.stdout:
-                for line in updater_process.stdout:
-                    print(f"  [updater] {line.rstrip()}")
-        
-        import threading
-        log_thread = threading.Thread(target=_capture_updater_logs, daemon=True)
-        log_thread.start()
-    except Exception as e:
-        print(f"⚠️  Failed to start real-time updater: {e}", file=sys.stderr)
-        updater_process = None
+        # Determine the correct command
+        try:
+            # Try using the main module
+            updater_cmd = [
+                sys.executable,
+                "realtime_updater.py",
+                str(repo_path),
+                "--host",
+                args.host,
+                "--port",
+                str(args.port),
+                "--debounce",
+                str(args.debounce),
+            ]
+            if args.no_update:
+                updater_cmd.append("--no-update")
+        except Exception:
+            pass
 
-    print()
+        try:
+            updater_process = subprocess.Popen(
+                updater_cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                bufsize=1,  # Line buffering
+            )
+            print(f"✓ Real-time updater started (PID: {updater_process.pid})")
+            
+            # Start a thread to capture and display updater logs
+            def _capture_updater_logs():
+                """Capture logs from the background updater process."""
+                if updater_process.stdout:
+                    for line in updater_process.stdout:
+                        print(f"  [updater] {line.rstrip()}")
+            
+            import threading
+            log_thread = threading.Thread(target=_capture_updater_logs, daemon=True)
+            log_thread.start()
+        except Exception as e:
+            print(f"⚠️  Failed to start real-time updater: {e}", file=sys.stderr)
+            updater_process = None
+
+        print()
 
     # Build MCP server command
     mcp_cmd = [

@@ -7,7 +7,7 @@ from typing import Any
 from loguru import logger
 from tree_sitter import Node, Parser
 
-from .config import IGNORE_PATTERNS, IGNORE_SUFFIXES
+from .config import IGNORE_PATTERNS, IGNORE_SUFFIXES, settings
 from .language_config import LANGUAGE_FQN_CONFIGS, get_language_config
 from .parsers.factory import ProcessorFactory
 from .services.graph_service import MemgraphIngestor
@@ -393,8 +393,7 @@ class GraphUpdater:
                 f"Updating embeddings for {len(results)} functions/methods in changed files"
             )
 
-            embeddings_to_process = []
-            source_code_map = {}
+            embeddings_to_process: list[tuple[str, int, str]] = []
 
             for result in results:
                 node_id = result["node_id"]
@@ -408,10 +407,8 @@ class GraphUpdater:
                 )
 
                 if source_code:
-                    embeddings_to_process.append(source_code)
-                    source_code_map[len(embeddings_to_process) - 1] = (
-                        node_id,
-                        qualified_name,
+                    embeddings_to_process.extend(
+                        self._chunk_code(source_code, node_id, qualified_name)
                     )
 
             if not embeddings_to_process:
@@ -421,19 +418,19 @@ class GraphUpdater:
             batch_size = 100
             for batch_start in range(0, len(embeddings_to_process), batch_size):
                 batch_end = min(batch_start + batch_size, len(embeddings_to_process))
-                batch_codes = embeddings_to_process[batch_start:batch_end]
+                batch_chunks = embeddings_to_process[batch_start:batch_end]
+                batch_codes = [c[0] for c in batch_chunks]
 
                 try:
                     batch_embeddings = embed_code_batch(
                         batch_codes, batch_size=batch_size
                     )
-                    
+
                     batch_data = []
                     for idx, embedding in enumerate(batch_embeddings):
-                        code_idx = batch_start + idx
-                        node_id, qualified_name = source_code_map[code_idx]
+                        _, node_id, qualified_name = batch_chunks[idx]
                         batch_data.append((node_id, embedding, qualified_name))
-                    
+
                     if batch_data:
                         batch_store_embeddings(
                             batch_data,
@@ -623,8 +620,11 @@ class GraphUpdater:
                     )
 
                     if source_code:
-                        chunk_codes.append(source_code)
-                        chunk_node_info.append((node_id, qualified_name))
+                        for chunk_code, chunk_node_id, chunk_qn in self._chunk_code(
+                            source_code, node_id, qualified_name
+                        ):
+                            chunk_codes.append(chunk_code)
+                            chunk_node_info.append((chunk_node_id, chunk_qn))
 
                 if chunk_codes:
                     try:
@@ -657,6 +657,22 @@ class GraphUpdater:
         except Exception as e:
             logger.error(f"Error during semantic embedding generation: {e}")
             logger.error("Skipping rest of Pass 4.")
+
+    @staticmethod
+    def _chunk_code(
+        code: str, node_id: int, qualified_name: str
+    ) -> list[tuple[str, int, str]]:
+        if not code:
+            return []
+        max_size = settings.EMBED_MAX_CHUNK_SIZE
+        if len(code) <= max_size:
+            return [(code, node_id, qualified_name)]
+        chunks: list[tuple[str, int, str]] = []
+        for i in range(0, len(code), max_size):
+            chunk_code = code[i : i + max_size]
+            chunk_qn = f"{qualified_name}_chunk_{len(chunks)}"
+            chunks.append((chunk_code, node_id, chunk_qn))
+        return chunks
 
     def _extract_source_code(
         self, qualified_name: str, file_path: str, start_line: int, end_line: int

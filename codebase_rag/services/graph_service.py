@@ -86,6 +86,7 @@ class MemgraphIngestor:
         self.node_buffer: list[tuple[str, dict[str, Any]]] = []
         self.relationship_buffer: list[tuple[tuple, str, tuple, dict | None]] = []
         # Store repo_path as a normalized absolute path string
+        self._is_default_repo = not repo_path or str(repo_path) == "."
         self.repo_path = str(Path(repo_path or ".").expanduser().resolve())
         self.unique_constraints = {
             "Project": "name",
@@ -147,9 +148,8 @@ class MemgraphIngestor:
             A WHERE clause fragment, or empty string if repo_path is "."
             Example: "(n._repo_path = 'path') AND "
         """
-        if self.repo_path == ".":
+        if self._is_default_repo:
             return ""
-        # Return the filter as a clause fragment that can be added to WHERE
         return f"({node_var}._repo_path = '{self.repo_path}') AND "
 
     def _execute_query(self, query: str, params: dict[str, Any] | None = None) -> list:

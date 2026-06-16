@@ -916,7 +916,7 @@ def start(
     effective_batch_size = settings.resolve_batch_size(batch_size)
 
     if update_graph:
-        repo_to_update = Path(target_repo_path)
+        repo_to_update = Path(target_repo_path).expanduser().resolve()
         console.print(
             f"[bold green]Updating knowledge graph for: {repo_to_update}[/bold green]"
         )

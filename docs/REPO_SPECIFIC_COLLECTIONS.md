@@ -123,7 +123,11 @@ collection_name = get_collection_name("/specific/repo/path")
 ### Delete a Collection
 
 ```bash
+# Delete a specific collection
 curl -X DELETE http://localhost:6333/collections/code_embeddings_8e336968
+
+# Delete ALL code_embeddings collections using the utility script
+python utils/delete_all_collections.py
 ```
 
 ## Benefits

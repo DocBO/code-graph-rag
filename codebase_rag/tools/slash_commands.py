@@ -44,3 +44,8 @@ def get_help_text() -> str:
 
 def has_command(command: str) -> bool:
     return command in _COMMANDS
+
+
+def get_command_list() -> list[str]:
+    """Return list of all command names for autocomplete."""
+    return list(_COMMANDS.keys())

@@ -4,6 +4,7 @@ import re
 import shlex
 import shutil
 import sys
+import traceback
 import uuid
 from pathlib import Path
 from typing import Any
@@ -11,6 +12,7 @@ from typing import Any
 import typer
 from loguru import logger
 from prompt_toolkit import prompt
+from prompt_toolkit.completion import WordCompleter
 from prompt_toolkit.formatted_text import HTML
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.shortcuts import print_formatted_text
@@ -34,7 +36,7 @@ from .mcp import serve_mcp_http, serve_mcp_stdio
 from .parser_loader import load_parsers
 from .runtime import initialize_services_and_agent
 from .tools.semantic_seed_strategy import run_semantic_seed_strategy
-from .tools.slash_commands import get_help_text, parse_slash_command
+from .tools.slash_commands import get_command_list, get_help_text, parse_slash_command
 
 # Style constants
 confirm_edits_globally = True
@@ -565,6 +567,16 @@ def _handle_chat_images(question: str, project_root: Path) -> str:
     return updated_question
 
 
+_slash_command_completer = WordCompleter(
+    get_command_list(),
+    sentence=True,
+    meta_dict={
+        "/help": "List available slash commands",
+        "/semantic-seed-strategy": "Semantic search + graph expansion",
+    },
+)
+
+
 def get_multiline_input(prompt_text: str = "Ask a question") -> str:
     """Get multiline input from user with Ctrl+J to submit."""
     bindings = KeyBindings()
@@ -601,6 +613,7 @@ def get_multiline_input(prompt_text: str = "Ask a question") -> str:
         key_bindings=bindings,
         wrap_lines=True,
         style=ORANGE_STYLE,
+        completer=_slash_command_completer,
     )
     if result is None:
         raise EOFError
@@ -658,21 +671,32 @@ async def run_chat_loop(
             )
 
             if command == "/semantic-seed-strategy":
-                with console.status(
-                    "[bold green]Running semantic seed strategy...[/bold green]"
-                ):
-                    response_text = await run_semantic_seed_strategy(
-                        question_with_context, str(project_root)
+                try:
+                    with console.status(
+                        "[bold green]Running semantic seed strategy...[/bold green]"
+                    ):
+                        response_text = await run_semantic_seed_strategy(
+                            question_with_context, str(project_root)
+                        )
+                    markdown_response = Markdown(response_text)
+                    console.print(
+                        Panel(
+                            markdown_response,
+                            title="[bold green]Assistant[/bold green]",
+                            border_style="green",
+                        )
                     )
-                markdown_response = Markdown(response_text)
-                console.print(
-                    Panel(
-                        markdown_response,
-                        title="[bold green]Assistant[/bold green]",
-                        border_style="green",
+                    log_session_event(f"ASSISTANT: {response_text}")
+                except Exception as exc:
+                    logger.error(
+                        "Semantic seed strategy failed: {}", exc, exc_info=True
                     )
-                )
-                log_session_event(f"ASSISTANT: {response_text}")
+                    console.print(
+                        f"[bold red]Semantic seed strategy error: {exc}[/bold red]"
+                    )
+                    console.print(
+                        f"[dim]{traceback.format_exc()}[/dim]", markup=False
+                    )
                 continue
 
             # Check if this might be an edit operation and warn user upfront
@@ -745,9 +769,11 @@ async def run_chat_loop(
 
         except KeyboardInterrupt:
             break
-        except Exception as e:
-            logger.error("An unexpected error occurred: {}", e, exc_info=True)
-            console.print(f"[bold red]An unexpected error occurred: {e}[/bold red]")
+        except Exception as exc:
+            tb_text = traceback.format_exc()
+            logger.error("An unexpected error occurred: {}", exc, exc_info=True)
+            console.print(f"[bold red]An unexpected error occurred: {exc}[/bold red]")
+            console.print(f"[dim]{tb_text}[/dim]", markup=False)
 
 
 def _update_single_model_setting(role: str, model_string: str) -> None:

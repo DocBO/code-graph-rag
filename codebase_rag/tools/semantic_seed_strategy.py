@@ -257,6 +257,9 @@ async def run_semantic_seed_strategy(
     if not question.strip():
         return "Please provide a question after `/semantic-seed-strategy`."
 
+    logger.info("Starting semantic seed strategy for question: {}", question)
+    logger.info("Repo path: {}", repo_path)
+
     current_search_queries = [question]
     accumulated_seed_hits: dict[int, SeedHit] = {}
     accumulated_neighbor_ids: set[int] = set()
@@ -273,7 +276,11 @@ async def run_semantic_seed_strategy(
         )
 
         # 1. Gather seeds for current queries
-        new_seeds = await _gather_seeds(current_search_queries, repo_path, top_k)
+        try:
+            new_seeds = await _gather_seeds(current_search_queries, repo_path, top_k)
+        except Exception as exc:
+            logger.error("Seed gathering failed: {}", exc, exc_info=True)
+            return f"Error gathering semantic seeds: {exc}"
         
         # Keep only truly new seeds
         truly_new_seeds = [s for s in new_seeds if s.node_id not in accumulated_seed_hits]

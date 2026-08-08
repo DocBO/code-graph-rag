@@ -1,4 +1,5 @@
 import threading
+import time
 from collections import defaultdict
 from datetime import UTC, datetime
 from pathlib import Path
@@ -6,7 +7,6 @@ from typing import Any
 
 import mgclient
 from loguru import logger
-
 
 # Markers that indicate the underlying Memgraph connection was lost or closed.
 # When these appear, the operation should be retried on a fresh connection.
@@ -20,6 +20,17 @@ CONNECTION_ERROR_MARKERS = (
     "server closed the connection",
     "connection is closed",
 )
+
+# Memgraph aborts one of two concurrently conflicting write transactions.
+# The statement is safe to retry once the conflicting transaction finishes.
+TRANSACTION_CONFLICT_MARKERS = (
+    "cannot resolve conflicting transactions",
+    "conflicting transaction",
+)
+
+# How many times to retry a single statement after a transient Memgraph error
+# (connection loss or a conflicting write transaction).
+QUERY_RETRY_ATTEMPTS = 3
 
 
 def execute_read_query(
@@ -69,7 +80,7 @@ def execute_read_query(
             )
             logger.error(f"    Query: {query}")
             logger.error(
-                f"    Hint: Cypher does not use semicolons. Ensure query is valid."
+                "    Hint: Cypher does not use semicolons. Ensure query is valid."
             )
         else:
             logger.error(f"Query execution failed: {e}")
@@ -132,8 +143,6 @@ class MemgraphIngestor:
         Memgraph can be temporarily unavailable (e.g. restarting or recovering
         after an OOM kill), so the caller should not die on the first refusal.
         """
-        import time
-
         max_attempts = self._connect_retries
         backoff = 1.0
         for attempt in range(1, max_attempts + 1):
@@ -160,11 +169,12 @@ class MemgraphIngestor:
                 f"An exception occurred: {exc_val}. Flushing remaining items...",
                 exc_info=True,
             )
-        
+
         self.flush_all()
-        
+
         if self.conn:
             import threading
+
             # Close the connection with a timeout to prevent hanging
             # on large repositories where Memgraph might be slow to finalize
             def close_connection():
@@ -172,13 +182,15 @@ class MemgraphIngestor:
                     self.conn.close()
                 except Exception as e:
                     logger.warning(f"Error closing connection: {e}")
-            
+
             close_thread = threading.Thread(target=close_connection, daemon=True)
             close_thread.start()
             close_thread.join(timeout=5.0)  # Wait max 5 seconds
-            
+
             if close_thread.is_alive():
-                logger.warning("Connection close timed out after 5 seconds - abandoning connection")
+                logger.warning(
+                    "Connection close timed out after 5 seconds - abandoning connection"
+                )
             else:
                 logger.debug("Disconnected from Memgraph.")
 
@@ -201,6 +213,12 @@ class MemgraphIngestor:
         """Return True if the exception indicates a lost/dead connection."""
         msg = str(exc).lower()
         return any(marker in msg for marker in CONNECTION_ERROR_MARKERS)
+
+    @staticmethod
+    def _is_transaction_conflict(exc: BaseException) -> bool:
+        """Return True if the exception is a concurrent-write transaction conflict."""
+        msg = str(exc).lower()
+        return any(marker in msg for marker in TRANSACTION_CONFLICT_MARKERS)
 
     def _reconnect(self) -> None:
         """Establish a fresh Memgraph connection, replacing a dead one.
@@ -238,11 +256,13 @@ class MemgraphIngestor:
         params = params or {}
         with self._lock:
             self._ensure_connected()
-            for attempt in range(2):
+            for attempt in range(QUERY_RETRY_ATTEMPTS):
                 cursor = None
                 try:
                     cursor = self.conn.cursor()
-                    logger.debug(f"Executing query: {query[:100]}... with params: {params}")
+                    logger.debug(
+                        f"Executing query: {query[:100]}... with params: {params}"
+                    )
                     cursor.execute(query, params)
                     if not cursor.description:
                         return []
@@ -264,23 +284,37 @@ class MemgraphIngestor:
                 except Exception as e:
                     if attempt == 0 and self._is_connection_error(e):
                         logger.error(
-                            f"Connection error during query (attempt {attempt + 1}/2): {e}. Reconnecting and retrying."
+                            f"Connection error during query (attempt {attempt + 1}/{QUERY_RETRY_ATTEMPTS}): {e}. Reconnecting and retrying."
                         )
                         # _reconnect retries with backoff until Memgraph is
                         # available; if it ultimately fails it raises.
                         self._reconnect()
                         continue
+                    if (
+                        self._is_transaction_conflict(e)
+                        and attempt < QUERY_RETRY_ATTEMPTS - 1
+                    ):
+                        logger.warning(
+                            f"Transaction conflict during query (attempt {attempt + 1}/{QUERY_RETRY_ATTEMPTS}): {e}. Retrying."
+                        )
+                        time.sleep(0.25 * (attempt + 1))
+                        continue
                     error_str = str(e).lower()
                     # Check for common Cypher syntax errors
-                    if "unexpected" in error_str and ("eof" in error_str or ";" in error_str):
+                    if "unexpected" in error_str and (
+                        "eof" in error_str or ";" in error_str
+                    ):
                         logger.error(
                             f"!!! Cypher Syntax Error (likely invalid semicolon or syntax): {e}"
                         )
                         logger.error(f"    Query: {query}")
                         logger.error(
-                            f"    Hint: Cypher does not use semicolons. Ensure query is valid."
+                            "    Hint: Cypher does not use semicolons. Ensure query is valid."
                         )
-                    elif "already exists" not in error_str and "constraint" not in error_str:
+                    elif (
+                        "already exists" not in error_str
+                        and "constraint" not in error_str
+                    ):
                         logger.error(f"!!! Cypher Error: {e}")
                         logger.error(f"    Query: {query}")
                         logger.error(f"    Params: {params}")
@@ -302,7 +336,7 @@ class MemgraphIngestor:
             return
         with self._lock:
             self._ensure_connected()
-            for attempt in range(2):
+            for attempt in range(QUERY_RETRY_ATTEMPTS):
                 cursor = None
                 try:
                     cursor = self.conn.cursor()
@@ -317,9 +351,18 @@ class MemgraphIngestor:
                 except Exception as e:
                     if attempt == 0 and self._is_connection_error(e):
                         logger.error(
-                            f"Connection error during batch query (attempt {attempt + 1}/2): {e}. Reconnecting and retrying."
+                            f"Connection error during batch query (attempt {attempt + 1}/{QUERY_RETRY_ATTEMPTS}): {e}. Reconnecting and retrying."
                         )
                         self._reconnect()
+                        continue
+                    if (
+                        self._is_transaction_conflict(e)
+                        and attempt < QUERY_RETRY_ATTEMPTS - 1
+                    ):
+                        logger.warning(
+                            f"Transaction conflict during batch query (attempt {attempt + 1}/{QUERY_RETRY_ATTEMPTS}): {e}. Retrying."
+                        )
+                        time.sleep(0.25 * (attempt + 1))
                         continue
                     if "already exists" not in str(e).lower():
                         logger.error(f"!!! Batch Cypher Error: {e}")
@@ -351,7 +394,7 @@ class MemgraphIngestor:
             return []
         with self._lock:
             self._ensure_connected()
-            for attempt in range(2):
+            for attempt in range(QUERY_RETRY_ATTEMPTS):
                 cursor = None
                 try:
                     cursor = self.conn.cursor()
@@ -361,7 +404,9 @@ class MemgraphIngestor:
                     if extra_params:
                         full_params.update(extra_params)
 
-                    logger.debug(f"Executing batch query with {len(params_list)} items...")
+                    logger.debug(
+                        f"Executing batch query with {len(params_list)} items..."
+                    )
                     cursor.execute(batch_query, full_params)
                     if not cursor.description:
                         return []
@@ -378,9 +423,18 @@ class MemgraphIngestor:
                 except Exception as e:
                     if attempt == 0 and self._is_connection_error(e):
                         logger.error(
-                            f"Connection error during batch query (attempt {attempt + 1}/2): {e}. Reconnecting and retrying."
+                            f"Connection error during batch query (attempt {attempt + 1}/{QUERY_RETRY_ATTEMPTS}): {e}. Reconnecting and retrying."
                         )
                         self._reconnect()
+                        continue
+                    if (
+                        self._is_transaction_conflict(e)
+                        and attempt < QUERY_RETRY_ATTEMPTS - 1
+                    ):
+                        logger.warning(
+                            f"Transaction conflict during batch query (attempt {attempt + 1}/{QUERY_RETRY_ATTEMPTS}): {e}. Retrying."
+                        )
+                        time.sleep(0.25 * (attempt + 1))
                         continue
                     logger.error(f"!!! Batch Cypher Error: {e}")
                     logger.error(f"    Query: {query}")
@@ -534,7 +588,7 @@ class MemgraphIngestor:
 
         for pattern, params_list in rels_by_pattern.items():
             from_label, from_key, rel_type, to_label, to_key = pattern
-            
+
             query = (
                 f"MATCH (a:{from_label} {{{from_key}: row.from_val, _repo_path: $repo_path}}), "
                 f"(b:{to_label} {{{to_key}: row.to_val, _repo_path: $repo_path}})\n"
@@ -548,11 +602,11 @@ class MemgraphIngestor:
                 )
 
             total_attempted += len(params_list)
-            
+
             results = self._execute_batch_with_return(
                 query, params_list, {"repo_path": self.repo_path}
             )
-            
+
             batch_successful = (
                 sum(r.get("created", 0) for r in results) if results else 0
             )
@@ -583,13 +637,13 @@ class MemgraphIngestor:
 
     def fetch_all(self, query: str, params: dict[str, Any] | None = None) -> list:
         """Executes a query and fetches all results.
-        
+
         Automatically includes 'repo_path' in params for repository isolation.
         """
         params = params or {}
         if "repo_path" not in params:
             params["repo_path"] = self.repo_path
-            
+
         logger.debug(f"Executing fetch query: {query} with params: {params}")
         return self._execute_query(query, params)
 

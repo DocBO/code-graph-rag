@@ -1,4 +1,4 @@
-.PHONY: help all install dev test clean python
+.PHONY: help all install dev test test-quick test-parallel clean python
 
 help: ## Show this help message
 	@echo "Available targets:"
@@ -30,6 +30,9 @@ dev: ## Setup development environment (install deps + pre-commit hooks)
 
 test: ## Run tests
 	uv run pytest
+
+test-quick: ## Run quick subset (system + python + typescript tests)
+	uv run pytest $$(ls codebase_rag/tests/test_*.py | grep -vE "test_(javascript|rust|go|scala|java|cpp|lua)_" | grep -v "test_rust\.py")
 
 test-parallel: ## Run tests in parallel
 	uv run pytest -n auto

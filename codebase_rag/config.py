@@ -75,6 +75,9 @@ class AppConfig(BaseSettings):
     TARGET_REPO_PATH: str = "."
     SHELL_COMMAND_TIMEOUT: int = 30
 
+    # Control panel backend (used by the MCP get_watched_repos tool)
+    CONTROL_PANEL_URL: str = "http://127.0.0.1:8008"
+
     # Runtime overrides
     _active_orchestrator: ModelConfig | None = None
     _active_cypher: ModelConfig | None = None
@@ -208,7 +211,7 @@ BASE_IGNORE_PATTERNS = {
 
 # Combine base ignores with optional user-provided directories (comma separated)
 IGNORE_PATTERNS = BASE_IGNORE_PATTERNS | _parse_ignore_dirs(settings.INGEST_IGNORE_DIRS)
-IGNORE_SUFFIXES = {".tmp"} # "~", ".md", ".txt"}
+IGNORE_SUFFIXES = {".tmp"}  # "~", ".md", ".txt"}
 
 
 # --- Edit Operation Constants ---

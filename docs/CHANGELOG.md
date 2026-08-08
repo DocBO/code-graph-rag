@@ -2,6 +2,36 @@
 
 ## 2026-08-08
 
+### MCP Tool: `get_watched_repos` ✅
+- **Added `get_watched_repos` MCP tool** — returns which repositories are registered with the control panel and whether each has an active real-time watcher running, so agents can quickly check if their repo is being watched or is stopped.
+- **Primary source: control panel** — queries `GET {CONTROL_PANEL_URL}/api/status` (new `CONTROL_PANEL_URL` setting, default `http://127.0.0.1:8008`) and returns per-repo `watcher_state`, `watcher_pid`, `update_in_progress`, `last_update_at`, plus `watched_paths`.
+- **`/proc` fallback** — when the control panel is unreachable, scans `/proc` for live `realtime_updater.py` processes (deduplicated per repo, one entry per `uv run` wrapper + python child pair) so agents still get a running/stopped answer.
+- **Docs updated** — `docs/mcp-tools.md` section 5; verified tool is listed by the live MCP server (`get_status`, `ingest_status`, `query_codebase`, `quick_semantic_retrieval`, `get_watched_repos`).
+
+### Quick Test Subset: `make test-quick` Target ✅
+- **Added `test-quick` Makefile target** — runs only the system/core, Python, and TypeScript tests, skipping all other language suites (JavaScript, Rust, Go, Scala, Java, C++, Lua) for a fast feedback loop.
+- **Selection** — collects `codebase_rag/tests/test_*.py` excluding `test_<language>_` prefixes and the Rust language file `test_rust.py`.
+- **Verified** — 413 passed, 1 skipped in ~56s.
+
+### Watcher Conflict Fix: Duplicate-Watcher Dedup + Transaction-Conflict Retry ✅
+- **Root cause identified** — `uvicorn --reload` re-imports the control panel backend on every reload, re-creating `RepoManager` and losing the handle to still-running `realtime_updater.py` subprocesses. The dashboard then showed them as stopped; clicking Start spawned a *second* watcher for the same repo, so two processes wrote the same files concurrently and Memgraph aborted one with `Cannot resolve conflicting transactions` (seen as `Graph update failed... retrying after debounce`).
+- **Backend reconciles orphaned processes on startup** (`_adopt_running_processes`) — after a reload the backend finds live watcher/MCP process groups (via `/proc` pgrep grouped by process-group id), stops stale duplicates, and **re-spawns watchers it cannot track** (stdout pipe belonged to the dead instance) so update-progress tracking keeps working. MCP server is adopted directly (stateless).
+- **Start endpoints refuse duplicates** — `POST /api/repos/{path}/watch/start` and `/api/mcp/start` detect a live leftover process for the same repo/port and stop duplicates + adopt the newest instead of spawning a second writer.
+- **Memgraph transaction-conflict retry** — `graph_service._execute_query/_execute_batch/_execute_batch_with_return` now retry `Cannot resolve conflicting transactions` (3 attempts, backoff) instead of only connection errors.
+- **Visible tracebacks** — `realtime_updater.py` log format now includes `{exception}` so failed updates show the full cause instead of only the summary line.
+- **Verified** — 915 tests pass; watcher lifecycle (start→running→stop, adopted stop, restart after reload) and both repos' updates complete with no conflicts.
+
+### Control Panel: Watcher Dashboard + Unified MCP Manager ✅
+- **Added `control_panel/` full-stack stack** — FastAPI backend (`:8008`) + React/Vite dashboard (`:3003`) for managing Graph-Code RAG watchers and the unified MCP server.
+- **Runs in the project's uv environment** — `fastapi` and `uvicorn[standard]` added to `pyproject.toml`; backend is launched with `uv run uvicorn main:app` (no separate backend venv).
+- **Persisted repo registry** — `POST /api/repos` adds an absolute repo path (with debounce, batch size, `--no-update` toggle), persisted to `backend/data/repos.json`; DELETE deregisters and stops any running watcher.
+- **Per-repo watcher lifecycle** — Start/stop spawns `realtime_updater.py` subprocesses (`uv run`) with process-group SIGINT/SIGKILL cleanup; "Start + full scan" omits `--no-update` to run the initial ingestion. Start/stop responses now always reflect the registered watcher handle.
+- **Update-in-progress detection** — Watcher log lines are parsed (`Starting graph update` / `Graph update completed` / `Initial scan complete`) to drive `update_in_progress`, last-update timestamp, duration, and error state in the API.
+- **Unified MCP server** — One HTTP MCP instance (`:8765/mcp`) serves all registered repos since tools accept `repo_path` per call; start/stop/status/log endpoints plus default-repo selection in the UI.
+- **Fixed subprocess monitor race** — `_start_monitor` now spawns a real daemon thread instead of blocking `proc.wait()` in the request handler, eliminating the `AttributeError: 'NoneType' object has no attribute 'start'` crash after an MCP server exit.
+- **Dashboard status lamps** — Green = watcher active, pulsing amber = update running, red = error; per-repo log viewer, MCP log viewer, and 2.5s status polling.
+- **Smoke-tested** — Repo add/list/start(no-update)/full-scan-start/stop/delete, repeated MCP start→running→stop cycles, frontend `tsc && vite build` clean, backend ruff clean.
+
 ### Regression Fixes — Graph Ingestion and Test Stability (2026-08-08)
 
 **Status**: COMPLETED

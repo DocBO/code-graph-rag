@@ -22,7 +22,7 @@ Examples:
     uv run python start_mcp_with_watcher.py ~/my-project --debounce 30
 """
 
-import argparse
+import argparse 
 import os
 import shlex
 import socket

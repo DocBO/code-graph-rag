@@ -53,6 +53,37 @@ All tool responses include `repo_path` so clients can always see which repositor
 **Returns:**
 - `repo_path`, `last_ingest`, `changes` (added/deleted/modified/total), `metadata_path`
 
+### 5. `get_watched_repos`
+**Title:** Get Watched Repositories  
+**Description:** Return which repositories are registered with the control panel and whether each has an active real-time watcher running. Lets agents quickly check if their repo is being ingested/watched or is stopped.
+
+**Parameters:** None  
+
+**Returns:**
+- `source`: `"control_panel"` (live status via `CONTROL_PANEL_URL`, default `http://127.0.0.1:8008`) or `"proc_scan"` (fallback: `/proc` scan of `realtime_updater.py` processes when the control panel is unreachable)
+- `control_panel`: `{url, reachable, mcp?, error?}`
+- `repos[]`: each with `path`, `name`, `watcher_state`, `watcher_pid`, `update_in_progress`, `last_update_at`
+- `watched_paths[]`: paths currently being watched
+
+**Example output:**
+```json
+{
+  "source": "control_panel",
+  "control_panel": {"url": "http://127.0.0.1:8008", "reachable": true},
+  "repos": [
+    {
+      "path": "/home/oliver/gitlab/addibase/elysia",
+      "name": "elysia",
+      "watcher_state": "running",
+      "watcher_pid": 144318,
+      "update_in_progress": false,
+      "last_update_at": 1786204764.2
+    }
+  ],
+  "watched_paths": ["/home/oliver/gitlab/addibase/elysia"]
+}
+```
+
 ## Startup
 
 Use the unified startup script to launch both the MCP server and real-time watcher:

@@ -45,7 +45,10 @@ class TransportLoggingMiddleware:
             logger.info(f"[MCP HTTP] {method} {full_path}")
 
             # Log headers for debugging 400 errors
-            headers = {k.decode("utf-8"): v.decode("utf-8") for k, v in scope.get("headers", [])}
+            headers = {
+                k.decode("utf-8"): v.decode("utf-8")
+                for k, v in scope.get("headers", [])
+            }
             logger.debug(f"[MCP HTTP] Headers: {headers}")
 
         await self.app(scope, receive, send)
@@ -148,6 +151,12 @@ def _build_tool_schema(name: str) -> dict[str, Any]:
                     },
                 },
                 "required": ["search_phrase"],
+                "additionalProperties": False,
+            }
+        case "get_watched_repos":
+            return {
+                "type": "object",
+                "properties": {},
                 "additionalProperties": False,
             }
         case _:
@@ -289,6 +298,94 @@ class GraphCodeMCPContext:
             "changes": changes,
             "metadata_path": str(metadata_path),
         }
+
+    async def get_watched_repos(self) -> dict[str, Any]:
+        """Return registered repositories and whether each is actively watched.
+
+        Primary source is the control panel backend (``/api/status`` on
+        ``CONTROL_PANEL_URL``). If the control panel is unreachable, fall back
+        to scanning ``/proc`` for running ``realtime_updater.py`` processes so
+        agents can still tell whether their repo is being watched.
+        """
+
+        control_url = settings.CONTROL_PANEL_URL.rstrip("/")
+        try:
+            from urllib.request import urlopen
+
+            with urlopen(
+                f"{control_url}/api/status",
+                timeout=2.0,
+            ) as resp:
+                payload = json.loads(resp.read().decode())
+            repos = payload.get("repos", [])
+            watched = [
+                r["path"]
+                for r in repos
+                if (r.get("watcher") or {}).get("state") in ("running", "starting")
+            ]
+            return {
+                "source": "control_panel",
+                "control_panel": {
+                    "url": control_url,
+                    "reachable": True,
+                    "mcp": payload.get("mcp", {}),
+                },
+                "repos": [
+                    {
+                        "path": r["path"],
+                        "name": r.get("name"),
+                        "watcher_state": (r.get("watcher") or {}).get("state"),
+                        "watcher_pid": (r.get("watcher") or {}).get("pid"),
+                        "update_in_progress": (r.get("watcher") or {}).get(
+                            "update_in_progress"
+                        ),
+                        "last_update_at": (r.get("watcher") or {}).get(
+                            "last_update_at"
+                        ),
+                    }
+                    for r in repos
+                ],
+                "watched_paths": watched,
+            }
+        except Exception as exc:
+            logger.warning(
+                "Control panel not reachable at %s (%s); falling back to /proc scan.",
+                control_url,
+                exc,
+            )
+            watched = self._scan_watched_processes()
+            return {
+                "source": "proc_scan",
+                "control_panel": {
+                    "url": control_url,
+                    "reachable": False,
+                    "error": str(exc),
+                },
+                "repos": [{"path": p, "watcher_state": "running"} for p in watched],
+                "watched_paths": watched,
+            }
+
+    @staticmethod
+    def _scan_watched_processes() -> list[str]:
+        """Return repo paths with a live ``realtime_updater.py`` process."""
+        watched: list[str] = []
+        for proc_dir in Path("/proc").iterdir():
+            if not proc_dir.name.isdigit():
+                continue
+            try:
+                raw = (proc_dir / "cmdline").read_bytes()
+            except OSError:
+                continue
+            args = [a.decode(errors="replace") for a in raw.split(b"\x00") if a]
+            script_idx = next(
+                (i for i, a in enumerate(args) if a.endswith("realtime_updater.py")),
+                None,
+            )
+            if script_idx is not None and script_idx + 1 < len(args):
+                repo = str(Path(args[script_idx + 1]).expanduser().resolve())
+                if repo not in watched:
+                    watched.append(repo)
+        return watched
 
     async def query_codebase(
         self, question: str, repo_path: str | None = None
@@ -446,7 +543,11 @@ class GraphCodeMCPServer:
     def __post_init__(self) -> None:
         self._all_tools = self._build_tool_definitions()
         self.public_tools = (
-            [t for t in self._all_tools if t.name not in {"graph_query", "optimize_code"}]
+            [
+                t
+                for t in self._all_tools
+                if t.name not in {"graph_query", "optimize_code"}
+            ]
             if not self.expose_internal_tools
             else self._all_tools
         )
@@ -575,20 +676,12 @@ class GraphCodeMCPServer:
                             "items": {
                                 "type": "object",
                                 "properties": {
-                                    "qualified_name": {
-                                        "type": ["string", "null"]
-                                    },
+                                    "qualified_name": {"type": ["string", "null"]},
                                     "type": {"type": ["string", "null"]},
                                     "score": {"type": ["number", "null"]},
-                                    "filename": {
-                                        "type": ["string", "null"]
-                                    },
-                                    "start_line": {
-                                        "type": ["integer", "null"]
-                                    },
-                                    "end_line": {
-                                        "type": ["integer", "null"]
-                                    },
+                                    "filename": {"type": ["string", "null"]},
+                                    "start_line": {"type": ["integer", "null"]},
+                                    "end_line": {"type": ["integer", "null"]},
                                     "snippet": {"type": ["string", "null"]},
                                 },
                                 "required": [
@@ -604,6 +697,29 @@ class GraphCodeMCPServer:
                         },
                     },
                     "required": ["repo_path", "search_phrase", "top_n", "matches"],
+                },
+            ),
+            types.Tool(
+                name="get_watched_repos",
+                title="Get Watched Repositories",
+                description=(
+                    "Return which repositories are registered with the control panel and "
+                    "whether each has an active real-time watcher running. Lets agents quickly "
+                    "check if their repo is being ingested/watched or is stopped."
+                ),
+                inputSchema=_build_tool_schema("get_watched_repos"),
+                outputSchema={
+                    "type": "object",
+                    "properties": {
+                        "source": {"type": "string"},
+                        "control_panel": {"type": "object"},
+                        "repos": {
+                            "type": "array",
+                            "items": {"type": "object"},
+                        },
+                        "watched_paths": {"type": "array", "items": {"type": "string"}},
+                    },
+                    "required": ["source", "control_panel", "repos", "watched_paths"],
                 },
             ),
         ]
@@ -678,6 +794,16 @@ class GraphCodeMCPServer:
                     result,
                     f"Returned {len(result['matches'])} semantic snippet matches.",
                 )
+
+            if tool_name == "get_watched_repos":
+                result = await self.context.get_watched_repos()
+                watched = result.get("watched_paths", [])
+                message = (
+                    f"{len(watched)} repo(s) actively watched"
+                    if watched
+                    else "No repositories are currently being watched."
+                )
+                return self._format_response(result, message)
 
             raise ValueError(f"Unsupported tool: {tool_name}")
         except Exception as exc:  # pragma: no cover - error path tested separately
@@ -772,7 +898,9 @@ async def serve_mcp_http(
             await session_manager.handle_request(scope, receive, wrapped_send)
         except Exception as e:
             logger.error(f"[MCP HTTP] Exception in handle_request: {e}", exc_info=True)
-            await PlainTextResponse(f"Internal Error: {e}", status_code=500)(scope, receive, send)
+            await PlainTextResponse(f"Internal Error: {e}", status_code=500)(
+                scope, receive, send
+            )
 
     routes = [Mount(path, app=mcp_asgi)]
     if path != "/":

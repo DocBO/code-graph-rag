@@ -15,7 +15,6 @@ from codebase_rag.language_config import get_language_config
 from codebase_rag.parser_loader import load_parsers
 from codebase_rag.services.graph_service import MemgraphIngestor
 
-
 MODULE_SUBGRAPH_DELETE_QUERY = """
 MATCH (m:Module {path: $path, _repo_path: $repo_path})
 OPTIONAL MATCH (m)-[:DEFINES*0..]->(defined)
@@ -70,18 +69,47 @@ class CodeChangeEventHandler(FileSystemEventHandler):
         except ValueError:
             # If path is not relative to repo_path, it's definitely not relevant
             return False
-        
+
         # Ignore common binary and media extensions
         ignored_extensions = {
-            ".png", ".jpg", ".jpeg", ".gif", ".svg", ".ico", ".webp",
-            ".pdf", ".zip", ".tar", ".gz", ".7z", ".rar",
-            ".exe", ".dll", ".so", ".dylib",
-            ".pyc", ".pyo", ".pyd",
-            ".db", ".sqlite", ".sqlite3",
-            ".db-journal", ".db-shm", ".db-wal",
-            ".sqlite-journal", ".sqlite-shm", ".sqlite-wal",
-            ".woff", ".woff2", ".ttf", ".eot",
-            ".mp3", ".mp4", ".wav", ".avi", ".mov",
+            ".png",
+            ".jpg",
+            ".jpeg",
+            ".gif",
+            ".svg",
+            ".ico",
+            ".webp",
+            ".pdf",
+            ".zip",
+            ".tar",
+            ".gz",
+            ".7z",
+            ".rar",
+            ".exe",
+            ".dll",
+            ".so",
+            ".dylib",
+            ".pyc",
+            ".pyo",
+            ".pyd",
+            ".db",
+            ".sqlite",
+            ".sqlite3",
+            ".db-journal",
+            ".db-shm",
+            ".db-wal",
+            ".sqlite-journal",
+            ".sqlite-shm",
+            ".sqlite-wal",
+            ".woff",
+            ".woff2",
+            ".ttf",
+            ".eot",
+            ".mp3",
+            ".mp4",
+            ".wav",
+            ".avi",
+            ".mov",
         }
         if path.suffix.lower() in ignored_extensions:
             return False
@@ -94,7 +122,9 @@ class CodeChangeEventHandler(FileSystemEventHandler):
         """Schedule processing of pending changes after debounce period."""
         if self.timer:
             self.timer.cancel()
-        self.timer = threading.Timer(self.debounce_seconds, self._process_pending_changes)
+        self.timer = threading.Timer(
+            self.debounce_seconds, self._process_pending_changes
+        )
         self.timer.daemon = True
         self.timer.start()
 
@@ -288,7 +318,9 @@ def start_watcher(
         updater = GraphUpdater(ingestor, repo_path_obj, parsers, queries)
 
         if skip_initial:
-            logger.info("Skipping initial full scan (--no-update). Only watching for changes.")
+            logger.info(
+                "Skipping initial full scan (--no-update). Only watching for changes."
+            )
         else:
             logger.info("Performing initial full codebase scan...")
             updater.run()
@@ -312,7 +344,7 @@ if __name__ == "__main__":
     logger.remove()
     logger.add(
         sys.stdout,
-        format="<green>{time:YYYY-MM-DD HH:mm:ss.SSS}</green> | <level>{level: <8}</level> | <cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> - <level>{message}</level>",
+        format="<green>{time:YYYY-MM-DD HH:mm:ss.SSS}</green> | <level>{level: <8}</level> | <cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> - <level>{message}</level>\n{exception}",
         level="INFO",
     )
     logger.info("Logger configured for Real-Time Updater.")

@@ -12,6 +12,14 @@ def test_parse_slash_command_strips_token() -> None:
     assert remainder == "show me commands"
 
 
+def test_parse_slash_command_accepts_multiline_question() -> None:
+    command, remainder = parse_slash_command(
+        "/semantic-seed-strategy\nwhat is the Durchführung tab used for?"
+    )
+    assert command == "/semantic-seed-strategy"
+    assert remainder == "what is the Durchführung tab used for?"
+
+
 def test_parse_slash_command_ignores_unknown() -> None:
     command, remainder = parse_slash_command("/unknown do stuff")
     assert command is None
@@ -28,7 +36,9 @@ def test_help_text_lists_commands() -> None:
 async def test_semantic_seed_strategy_expands_graph(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    async def fake_search(query: str, top_k: int, repo_path: str | None = None) -> list[dict]:
+    async def fake_search(
+        query: str, top_k: int, repo_path: str | None = None
+    ) -> list[dict]:
         return [
             {
                 "node_id": 1,
@@ -98,5 +108,5 @@ async def test_semantic_seed_strategy_expands_graph(
     )
 
     assert result == "answer"
-    assert "*1..3" in str(captured["query"])
+    assert "*1..1" in str(captured["query"])
     assert captured["params"]["repo_path"] == str(repo_root)

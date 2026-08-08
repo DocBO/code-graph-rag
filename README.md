@@ -289,7 +289,7 @@ For active development, you can keep your knowledge graph automatically synchron
 **What it does:**
 - Watches your repository for file changes (create, modify, delete)
 - Automatically updates the knowledge graph in real-time
-- Maintains consistency by recalculating all function call relationships
+- Rebuilds call relationships only for changed files and their direct callers
 - Filters out irrelevant files (`.git`, `node_modules`, etc.)
 
 **How to use:**
@@ -310,7 +310,7 @@ make watch REPO_PATH=/path/to/your/repo
 uv run python start_mcp_with_watcher.py ~/my-project
 
 # With custom Memgraph and debounce settings
-uv run python start_mcp_with_watcher.py ~/my-project --debounce 30 --batch-size 1000
+uv run python start_mcp_with_watcher.py ~/my-project --debounce 30 --batch-size 1000 --transport http --mcp-port 8765 --no-update
 
 # With HTTP transport for the MCP server
 uv run python start_mcp_with_watcher.py ~/my-project --transport http --mcp-port 8765
@@ -338,7 +338,7 @@ uv run python -m codebase_rag.main start --repo-path ~/my-project
 uv run python -m codebase_rag.main mcp --repo-path ~/my-project
 ```
 
-**Performance note:** The updater currently recalculates all CALLS relationships on every file change to ensure consistency. This prevents "island" problems where changes in one file aren't reflected in relationships from other files, but may impact performance on very large codebases with frequent changes. **Note:** Optimization of this behavior is a work in progress.
+**Performance note:** The updater reparses only changed source files. When a changed symbol has inbound `CALLS` relationships, it also reprocesses only the modules that call that symbol, preserving cross-file relationship consistency without scanning the full repository.
 
 **CLI Arguments:**
 - `repo_path` (required): Path to repository to watch
@@ -452,8 +452,9 @@ uv run python -m codebase_rag.main mcp \
   --batch-size 2000
 ```
 
-The server shares the same provider configuration as the CLI (`.env`, `--orchestrator`, `--cypher`) and offers three tools:
-- `query_codebase`: Translate natural-language questions into Cypher and return the results.
+The server shares the same provider configuration as the CLI (`.env`, `--orchestrator`, `--cypher`) and offers four tools:
+- `query_codebase`: Answer natural-language questions using the standard agent search and answer flow.
+- `quick_semantic_retrieval`: Fast semantic-only retrieval of matched semantic chunks (not full symbol bodies) with filenames and line metadata (`search_phrase`, `top_n`).
 - `get_status`: Report repo path, Memgraph host/port, and the active model providers.
 - `ingest_status`: Report the last ingest timestamp and how many files have changed since then.
 

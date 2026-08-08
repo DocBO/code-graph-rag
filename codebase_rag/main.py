@@ -1191,8 +1191,12 @@ def mcp(
     )
     console.print(table)
     transport_lower = transport.lower()
+    console.print(
+        f"[cyan]Memgraph endpoint:[/cyan] {settings.MEMGRAPH_HOST}:{settings.MEMGRAPH_PORT}"
+    )
 
     if transport_lower == "stdio":
+        console.print("[cyan]MCP transport wiring:[/cyan] stdio")
         console.print(
             "[bold green]Starting MCP server over stdio (Ctrl+C to stop)...[/bold green]"
         )
@@ -1201,6 +1205,9 @@ def mcp(
         except KeyboardInterrupt:
             console.print("\n[bold red]MCP server stopped by user.[/bold red]")
     elif transport_lower == "http":
+        console.print(
+            f"[cyan]MCP transport wiring:[/cyan] http -> http://{host}:{port}{path}"
+        )
         console.print(
             f"[bold green]Starting MCP server over HTTP at http://{host}:{port}{path} (Ctrl+C to stop)...[/bold green]"
         )

@@ -28,9 +28,11 @@ def parse_slash_command(text: str) -> tuple[str | None, str]:
     stripped = text.lstrip()
     if not stripped.startswith("/"):
         return None, text
-    command, _, remainder = stripped.partition(" ")
+    parts = stripped.split(maxsplit=1)
+    command = parts[0]
+    remainder = parts[1] if len(parts) == 2 else ""
     if command in _COMMANDS:
-        return command, remainder.lstrip()
+        return command, remainder
     return None, text
 
 

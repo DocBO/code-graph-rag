@@ -1,5 +1,30 @@
 # Changelog
 
+## 2026-08-08
+
+### Realtime Graph-Qdrant File Correlation ✅
+- **Added file-scoped Qdrant cleanup before re-embedding** - Realtime embedding refresh now removes existing vectors for changed files first, then regenerates current chunks to prevent stale vectors after edits, deletions, and chunk-count shrink.
+- **Persisted source file metadata per chunk** - Embedding payloads now include `file_path`, enabling exact correlation between repository files and vector points.
+- **Added Qdrant delete helper for local + HTTP backends** - Introduced a shared deletion path that removes vectors by `file_path` filter in both client and HTTP modes.
+- **Fixed rename/move update coverage in watcher** - File move events now queue both source and destination paths, so old-file vectors are pruned and new-file vectors are regenerated in the same debounce cycle.
+- **Expanded realtime updater regression tests** - Added assertions for embedding refresh across create/modify/delete/unsupported flows and a dedicated move-event test for source+destination correlation.
+
+### MCP Semantic Snippet Retrieval ⚡
+- **Added `quick_semantic_retrieval` MCP tool** - New semantic-only retrieval path for fast snippet lookup without full agent orchestration.
+- **Snippet-focused response contract** - Tool now returns semantic matches with snippet text, filename, and start/end line metadata when available.
+- **Chunk-preserving retrieval output** - `quick_semantic_retrieval` now returns matched semantic chunks (or chunk-sized fallback slices) instead of full class/function bodies.
+- **Consistent repository context in MCP responses** - All MCP tool responses now include `repo_path` to make active repository context explicit for clients.
+- **MCP tooling docs updated** - README and MCP documentation now include usage and schema-level behavior for quick semantic retrieval.
+
+## 2026-08-07
+
+### Realtime Watcher Stability & MCP Startup Wiring 🔧
+- **Fixed watcher crash on dropped Memgraph sessions** - The realtime debounce worker now recovers from missing/closed connections by auto-reconnecting instead of terminating with `ConnectionError: Not connected to Memgraph`.
+- **Hardened debounce processing loop** - Real-time change processing now keeps queued files on failure and retries after the debounce interval, preventing silent loss of incremental updates.
+- **Thread-safe pending change handling** - Added synchronized access for queued file changes to avoid race conditions between watchdog event dispatch and debounce processing.
+- **Startup argument wiring cleanup** - Unified startup now separates Memgraph connection args from MCP HTTP transport args to avoid ambiguous `--host/--port` forwarding in HTTP mode.
+- **Added explicit wiring diagnostics** - Launcher, updater, and MCP startup now print effective Memgraph endpoint and MCP transport targets to make configuration mismatches immediately visible in logs.
+
 ## 2026-01-19
 
 - **Added Collection Cleanup Utility** - Created `utils/delete_all_collections.py` to quickly remove all repository-specific vector collections from Qdrant, facilitating easier troubleshooting of dimension mismatches.

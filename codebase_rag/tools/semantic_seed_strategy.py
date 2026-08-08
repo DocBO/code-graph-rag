@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
-from pathlib import Path
-from typing import Any, Callable, Iterable
-
 from itertools import islice
+from pathlib import Path
+from typing import Any, cast
 
 from loguru import logger
 
@@ -14,6 +14,25 @@ from ..services.graph_service import execute_read_query
 from ..services.llm import create_context_synthesizer
 from ..utils.source_extraction import extract_source_lines
 from .semantic_search import semantic_code_search_async
+
+_KEYWORD_STOP_WORDS = {
+    "about",
+    "code",
+    "does",
+    "find",
+    "frontend",
+    "from",
+    "have",
+    "implementation",
+    "show",
+    "that",
+    "the",
+    "this",
+    "what",
+    "where",
+    "which",
+    "with",
+}
 
 
 @dataclass(frozen=True)
@@ -40,9 +59,9 @@ def _choose_expansion_depth(scores: Iterable[float]) -> int:
     if not scores_list:
         return 1
     top_score = max(scores_list)
-    if top_score >= 0.85:
+    if top_score >= 0.8:
         return 1
-    if top_score >= 0.75:
+    if top_score >= 0.7:
         return 2
     return 3
 
@@ -64,7 +83,9 @@ def _format_expansions(expansions: list[ExpansionHit]) -> str:
     for exp in expansions:
         neighbor_name = exp.neighbor_name or f"node:{exp.neighbor_id}"
         label_str = ", ".join(exp.neighbor_labels) if exp.neighbor_labels else "Unknown"
-        rel_str = "->".join(exp.relationship_types) if exp.relationship_types else "RELATED"
+        rel_str = (
+            "->".join(exp.relationship_types) if exp.relationship_types else "RELATED"
+        )
         lines.append(
             f"- Seed {exp.seed_name} -> {neighbor_name} ({label_str}) via {rel_str}"
         )
@@ -84,7 +105,7 @@ def _read_file_head(file_path: str, repo_path: str, max_lines: int = 80) -> str 
     if not path_obj.exists():
         return None
     try:
-        with open(path_obj, "r", encoding="utf-8") as handle:
+        with open(path_obj, encoding="utf-8") as handle:
             lines = list(islice(handle, max_lines))
         return "".join(lines).strip()
     except Exception as exc:
@@ -113,7 +134,7 @@ def _fetch_node_location(node_id: int, repo_path: str) -> dict[str, Any] | None:
     )
     if not results:
         return None
-    return results[0]
+    return cast(dict[str, Any], results[0])
 
 
 def _get_node_source_snippet(node_id: int, repo_path: str) -> str | None:
@@ -129,8 +150,11 @@ def _get_node_source_snippet(node_id: int, repo_path: str) -> str | None:
         return None
 
     if labels.intersection({"Function", "Method", "Class"}) and start_line and end_line:
-        return extract_source_lines(
-            Path(path), int(start_line), int(end_line), repo_path=repo_path
+        return cast(
+            str | None,
+            extract_source_lines(
+                Path(path), int(start_line), int(end_line), repo_path=repo_path
+            ),
         )
 
     if labels.intersection({"Module", "File"}):
@@ -164,7 +188,9 @@ def _collect_sources(
     return sources
 
 
-async def _gather_seeds(queries: list[str], repo_path: str, top_k: int) -> list[SeedHit]:
+async def _gather_seeds(
+    queries: list[str], repo_path: str, top_k: int
+) -> list[SeedHit]:
     """Gather semantic and keyword seeds for a set of queries."""
     all_hits = {}  # node_id -> hit_dict
     for query in queries:
@@ -175,21 +201,34 @@ async def _gather_seeds(queries: list[str], repo_path: str, top_k: int) -> list[
         for res in sem_results:
             all_hits[res["node_id"]] = res
 
-        # Keyword search
-        potential_keywords = re.findall(r"\b[A-Z][a-zA-Z0-9_]+\b", query)
+        # Lexical fallback covers lowercase names and file paths. This is
+        # especially important for frontend files such as checkout-panel.tsx.
+        potential_keywords = list(
+            dict.fromkeys(
+                token.lower()
+                for token in re.findall(r"\b[\w-]{3,}\b", query, re.UNICODE)
+                if token.lower() not in _KEYWORD_STOP_WORDS
+            )
+        )[:8]
         if potential_keywords:
             logger.debug(f"Searching for keyword seeds in round: {potential_keywords}")
-            placeholders = ", ".join(f"${i}" for i in range(len(potential_keywords)))
-            kw_query = f"""
+            kw_query = """
             MATCH (n)
-            WHERE (n.name IN [{placeholders}] OR n.qualified_name IN [{placeholders}])
-              AND n._repo_path = $repo_path
-            RETURN id(n) AS node_id, n.qualified_name AS qualified_name, 
+            WHERE n._repo_path = $repo_path
+              AND any(keyword IN $keywords WHERE
+                toLower(coalesce(n.name, "")) CONTAINS keyword
+                OR toLower(coalesce(n.qualified_name, "")) CONTAINS keyword
+                OR toLower(coalesce(n.path, "")) CONTAINS keyword
+              )
+            RETURN id(n) AS node_id, n.qualified_name AS qualified_name,
                    n.name AS name, labels(n) AS type
-            LIMIT 5
+            LIMIT $limit
             """
-            kw_params = {str(i): kw for i, kw in enumerate(potential_keywords)}
-            kw_params["repo_path"] = repo_path
+            kw_params = {
+                "keywords": potential_keywords,
+                "repo_path": repo_path,
+                "limit": max(5, top_k),
+            }
             kw_results = execute_read_query(
                 host=settings.MEMGRAPH_HOST,
                 port=settings.MEMGRAPH_PORT,
@@ -198,13 +237,15 @@ async def _gather_seeds(queries: list[str], repo_path: str, top_k: int) -> list[
             )
             for res in kw_results:
                 if res["node_id"] not in all_hits:
-                    logger.info(f"  Found keyword seed: {res['name']} ({res['node_id']})")
+                    logger.info(
+                        f"  Found keyword seed: {res['name']} ({res['node_id']})"
+                    )
                     all_hits[res["node_id"]] = {
                         "node_id": res["node_id"],
                         "qualified_name": res["qualified_name"],
                         "name": res["name"],
                         "type": res["type"][0] if res["type"] else "Unknown",
-                        "score": 1.0,
+                        "score": 0.7,
                     }
 
     return [
@@ -264,7 +305,7 @@ async def run_semantic_seed_strategy(
     accumulated_seed_hits: dict[int, SeedHit] = {}
     accumulated_neighbor_ids: set[int] = set()
     all_expansions: list[ExpansionHit] = []
-    
+
     last_response = ""
 
     for attempt in range(max_retries + 1):
@@ -281,18 +322,20 @@ async def run_semantic_seed_strategy(
         except Exception as exc:
             logger.error("Seed gathering failed: {}", exc, exc_info=True)
             return f"Error gathering semantic seeds: {exc}"
-        
+
         # Keep only truly new seeds
-        truly_new_seeds = [s for s in new_seeds if s.node_id not in accumulated_seed_hits]
+        truly_new_seeds = [
+            s for s in new_seeds if s.node_id not in accumulated_seed_hits
+        ]
         for s in truly_new_seeds:
             accumulated_seed_hits[s.node_id] = s
 
         if not truly_new_seeds and attempt > 0:
             logger.info("  No new seeds found in this round. Stopping.")
             break
-            
+
         if not accumulated_seed_hits:
-             return (
+            return (
                 f"No semantic or keyword matches found for: '{question}'. "
                 "Try a more specific intent query."
             )
@@ -303,7 +346,7 @@ async def run_semantic_seed_strategy(
         node_ids = [hit.node_id for hit in seed_hits]
         placeholders = ", ".join(f"${i}" for i in range(len(node_ids)))
         limit = max(10, min(max_neighbors, 20 + len(node_ids) * 10))
-        
+
         expansion_query = f"""
         MATCH (seed)
         WHERE id(seed) IN [{placeholders}] AND seed._repo_path = $repo_path
@@ -318,7 +361,7 @@ async def run_semantic_seed_strategy(
         LIMIT $limit
         """
 
-        params = {str(i): node_id for i, node_id in enumerate(node_ids)}
+        params: dict[str, Any] = {str(i): node_id for i, node_id in enumerate(node_ids)}
         params["repo_path"] = repo_path
         params["limit"] = limit
 
@@ -338,7 +381,7 @@ async def run_semantic_seed_strategy(
         )
 
         logger.info("  Found {} graph expansions.", len(expansions_raw))
-        
+
         # Process expansions
         new_expansions = []
         for row in expansions_raw:
@@ -352,21 +395,21 @@ async def run_semantic_seed_strategy(
             )
             new_expansions.append(exp)
             accumulated_neighbor_ids.add(exp.neighbor_id)
-            
-        all_expansions = new_expansions # Refresh expansions with all seeds
+
+        all_expansions = new_expansions  # Refresh expansions with all seeds
 
         # 3. Collect sources
         seed_source_nodes = [
             (hit.node_id, hit.qualified_name or hit.name or f"node:{hit.node_id}")
             for hit in seed_hits
-            if hit.node_type in {"Function", "Method", "Class"}
+            if hit.node_type in {"Function", "Method", "Class", "Module", "File"}
         ]
         seed_sources = _collect_sources(
             seed_source_nodes,
             repo_path=repo_path,
             max_items=min(5 + attempt * 2, len(seed_hits)),
         )
-        
+
         neighbor_source_nodes = []
         for exp in all_expansions:
             if not {"Function", "Method", "Class", "Module", "File"}.intersection(
@@ -376,7 +419,7 @@ async def run_semantic_seed_strategy(
             neighbor_source_nodes.append(
                 (exp.neighbor_id, exp.neighbor_name or f"node:{exp.neighbor_id}")
             )
-            
+
         # Unique neighbor source nodes
         unique_neighbor_nodes = []
         seen_ids = set()
@@ -412,22 +455,26 @@ async def run_semantic_seed_strategy(
             )
             result = await synthesizer.run(prompt)
             last_response = result.output
-            
+
             # 5. Check sufficiency
             status, missing_concepts = _extract_sufficiency_info(last_response)
-            logger.info("  Round {} sufficiency: {} (Missing: {})", attempt + 1, status, missing_concepts)
-            
+            logger.info(
+                "  Round {} sufficiency: {} (Missing: {})",
+                attempt + 1,
+                status,
+                missing_concepts,
+            )
+
             if status == "Sufficient" or not missing_concepts:
                 break
-                
+
             # Prepare for next round
             current_search_queries = missing_concepts
-            
+
         except Exception as e:
             logger.error("  Synthesis round failed: {}", e)
             if attempt == 0:
-                 return f"Semantic seed strategy failed: {e}"
+                return f"Semantic seed strategy failed: {e}"
             break
 
     return last_response
-

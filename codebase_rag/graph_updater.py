@@ -2,7 +2,7 @@ import sys
 from collections import OrderedDict, defaultdict
 from collections.abc import ItemsView, KeysView
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from loguru import logger
 from tree_sitter import Node, Parser
@@ -14,6 +14,17 @@ from .services.graph_service import MemgraphIngestor
 from .utils.dependencies import has_semantic_dependencies
 from .utils.fqn_resolver import find_function_source_by_fqn
 from .utils.source_extraction import extract_source_with_fallback
+
+SEMANTIC_ASSET_EXTENSIONS = {
+    ".css",
+    ".html",
+    ".htm",
+    ".less",
+    ".sass",
+    ".scss",
+    ".svelte",
+    ".vue",
+}
 
 
 class FunctionRegistryTrie:
@@ -343,73 +354,81 @@ class GraphUpdater:
 
         # Process method overrides after all definitions are collected
         logger.info("Processing method overrides...")
-        
+
         self.factory.definition_processor.process_all_method_overrides()
-        
+
         logger.info("✓ Method overrides processed")
 
         logger.info("\n--- Analysis complete. Flushing all data to database... ---")
         self.ingestor.flush_all()
-        
+
         # Generate embeddings for functions and methods if semantic deps available
         self._generate_semantic_embeddings()
-        
+
         logger.info("✓✓✓ Ingestion complete")
 
     def update_embeddings_for_files(self, file_paths: list[Path]) -> None:
-        """Update semantic embeddings for functions and methods in specific files."""
+        """Update semantic embeddings for code entities in specific files."""
         if not has_semantic_dependencies():
             return
 
         try:
             from .embedder import embed_code_batch
-            from .vector_store import batch_store_embeddings
+            from .vector_store import batch_store_embeddings, delete_embeddings_for_files
 
             # Convert paths to relative strings as stored in DB
             rel_paths = [str(p.relative_to(self.repo_path)) for p in file_paths]
 
-            # Query database for Function and Method nodes in these files
+            # Remove any existing vectors tied to changed/deleted files before
+            # regenerating to keep Qdrant aligned with current file state.
+            delete_embeddings_for_files(rel_paths, repo_path=self.repo_path)
+
+            # Query database for symbols in these files.
             placeholders = ", ".join(f"${i}" for i in range(len(rel_paths)))
-            query = f"""
-            MATCH (m:Module)-[:DEFINES]->(n)
-            WHERE (n:Function OR n:Method) AND m.path IN [{placeholders}] AND n._repo_path = $repo_path
+            symbol_query = f"""
+            MATCH (m:Module)-[:DEFINES|CONTAINS*..5]->(n)
+            WHERE (n:Function OR n:Method OR n:Class)
+              AND m.path IN [{placeholders}]
+              AND n._repo_path = $repo_path
             RETURN id(n) AS node_id, n.qualified_name AS qualified_name,
                    n.start_line AS start_line, n.end_line AS end_line,
-                   m.path AS path
+                   m.path AS path, labels(n)[0] AS node_type
             """
 
-            params = {str(i): p for i, p in enumerate(rel_paths)}
+            params: dict[str, Any] = {str(i): path for i, path in enumerate(rel_paths)}
             params["repo_path"] = str(self.repo_path)
 
-            results = self.ingestor._execute_query(query, params)
+            results = self.ingestor._execute_query(symbol_query, params)
+
+            # Include complete parseable modules and frontend assets. Module-level
+            # JSX/template text and CSS selectors often live outside named symbols.
+            file_query = f"""
+            MATCH (n)
+            WHERE n._repo_path = $repo_path
+              AND n.path IN [{placeholders}]
+              AND (
+                n:Module
+                OR (n:File AND n.extension IN $asset_extensions)
+              )
+            RETURN id(n) AS node_id, n.qualified_name AS qualified_name,
+                   null AS start_line, null AS end_line,
+                   n.path AS path, labels(n)[0] AS node_type
+            """
+            file_params = dict(params)
+            file_params["asset_extensions"] = sorted(SEMANTIC_ASSET_EXTENSIONS)
+            results.extend(self.ingestor._execute_query(file_query, file_params))
 
             if not results:
                 logger.debug(
-                    f"No functions or methods found for embedding update in {len(file_paths)} files"
+                    f"No semantic content found for embedding update in {len(file_paths)} files"
                 )
                 return
 
             logger.info(
-                f"Updating embeddings for {len(results)} functions/methods in changed files"
+                f"Updating embeddings for {len(results)} code entities in changed files"
             )
 
-            embeddings_to_process: list[tuple[str, int, str]] = []
-
-            for result in results:
-                node_id = result["node_id"]
-                qualified_name = result["qualified_name"]
-                start_line = result.get("start_line")
-                end_line = result.get("end_line")
-                file_path = result.get("path")
-
-                source_code = self._extract_source_code(
-                    qualified_name, file_path, start_line, end_line
-                )
-
-                if source_code:
-                    embeddings_to_process.extend(
-                        self._chunk_code(source_code, node_id, qualified_name)
-                    )
+            embeddings_to_process = self._prepare_embedding_chunks(results)
 
             if not embeddings_to_process:
                 return
@@ -428,14 +447,13 @@ class GraphUpdater:
 
                     batch_data = []
                     for idx, embedding in enumerate(batch_embeddings):
-                        _, node_id, qualified_name = batch_chunks[idx]
-                        batch_data.append((node_id, embedding, qualified_name))
+                        chunk_text, node_id, qualified_name, source_path = batch_chunks[idx]
+                        batch_data.append(
+                            (node_id, embedding, qualified_name, chunk_text, source_path)
+                        )
 
                     if batch_data:
-                        batch_store_embeddings(
-                            batch_data,
-                            repo_path=self.repo_path
-                        )
+                        batch_store_embeddings(batch_data, repo_path=self.repo_path)
                 except Exception as e:
                     logger.warning(
                         f"Failed to process embedding batch for changed files: {e}"
@@ -502,15 +520,12 @@ class GraphUpdater:
                 return True
 
             relative_parts = path.relative_to(self.repo_path).parts
-            
+
             # Skip if any part of the path starts with a dot (hidden files/folders)
             if any(part.startswith(".") for part in relative_parts):
                 return True
 
-            return any(
-                part in self.ignore_dirs
-                for part in relative_parts
-            )
+            return any(part in self.ignore_dirs for part in relative_parts)
 
         # Use pathlib.rglob for more efficient file iteration
         for filepath in self.repo_path.rglob("*"):
@@ -552,19 +567,33 @@ class GraphUpdater:
         ast_cache_items = list(self.ast_cache.items())
         total_files = len(ast_cache_items)
         logger.info(f"Processing function calls for {total_files} files...")
-        
+
         for i, (file_path, (root_node, language)) in enumerate(ast_cache_items):
             if i > 0 and i % 10 == 0:
-                logger.debug(f"  Progress: {i}/{total_files} files processed ({(i/total_files)*100:.1f}%)")
-                
+                logger.debug(
+                    f"  Progress: {i}/{total_files} files processed ({(i / total_files) * 100:.1f}%)"
+                )
+
             self.factory.call_processor.process_calls_in_file(
                 file_path, root_node, language, self.queries
             )
-        
-        logger.debug(f"  Progress: {total_files}/{total_files} files processed (100.0%)")
+
+        logger.debug(
+            f"  Progress: {total_files}/{total_files} files processed (100.0%)"
+        )
+
+    def process_function_calls_for_files(self, file_paths: list[Path]) -> None:
+        """Process call relationships only for the supplied cached source files."""
+        for file_path in file_paths:
+            if file_path not in self.ast_cache:
+                continue
+            root_node, language = self.ast_cache[file_path]
+            self.factory.call_processor.process_calls_in_file(
+                file_path, root_node, language, self.queries
+            )
 
     def _generate_semantic_embeddings(self) -> None:
-        """Generate and store semantic embeddings for functions, methods and classes."""
+        """Generate embeddings for symbols, modules, and frontend assets."""
         logger.info("--- Starting Pass 4: Generating semantic embeddings ---")
 
         if not has_semantic_dependencies():
@@ -577,23 +606,34 @@ class GraphUpdater:
             from .embedder import embed_code_batch
             from .vector_store import batch_store_embeddings
 
-            # Query database for all Function, Method and Class nodes in the current repo
-            # Use variable length path to find the module containing the entity
+            # Symbols alone miss common frontend behavior stored in top-level JSX,
+            # templates, and styles. Include parseable modules and frontend assets.
             query = """
-            MATCH (m:Module)-[:DEFINES|CONTAINS*..5]->(n)
-            WHERE (n:Function OR n:Method OR n:Class) AND n._repo_path = $repo_path
+            MATCH (n)
+            WHERE n._repo_path = $repo_path
+              AND (
+                n:Function OR n:Method OR n:Class OR n:Module
+                OR (n:File AND n.extension IN $asset_extensions)
+              )
+            OPTIONAL MATCH (m:Module)-[:DEFINES|CONTAINS*..5]->(n)
             RETURN DISTINCT id(n) AS node_id, n.qualified_name AS qualified_name,
                    n.start_line AS start_line, n.end_line AS end_line,
-                   m.path AS path
+                   coalesce(m.path, n.path) AS path,
+                   labels(n)[0] AS node_type
             """
 
-            params = {"repo_path": str(self.repo_path)}
-            logger.info("  [Pass 4] Fetching functions, methods and classes from Memgraph...")
+            params = {
+                "repo_path": str(self.repo_path),
+                "asset_extensions": sorted(SEMANTIC_ASSET_EXTENSIONS),
+            }
+            logger.info("  [Pass 4] Fetching semantic content from Memgraph...")
 
             results = self.ingestor._execute_query(query, params)
 
             if not results:
-                logger.info("✓ [Pass 4] No embeddable items found for embedding generation")
+                logger.info(
+                    "✓ [Pass 4] No embeddable items found for embedding generation"
+                )
                 return
 
             total_count = len(results)
@@ -605,26 +645,11 @@ class GraphUpdater:
 
             for i in range(0, total_count, chunk_size):
                 chunk = results[i : i + chunk_size]
-                chunk_codes = []
-                chunk_node_info = []
-
-                for result in chunk:
-                    node_id = result["node_id"]
-                    qualified_name = result["qualified_name"]
-                    start_line = result.get("start_line")
-                    end_line = result.get("end_line")
-                    file_path = result.get("path")
-
-                    source_code = self._extract_source_code(
-                        qualified_name, file_path, start_line, end_line
-                    )
-
-                    if source_code:
-                        for chunk_code, chunk_node_id, chunk_qn in self._chunk_code(
-                            source_code, node_id, qualified_name
-                        ):
-                            chunk_codes.append(chunk_code)
-                            chunk_node_info.append((chunk_node_id, chunk_qn))
+                prepared_chunks = self._prepare_embedding_chunks(chunk)
+                chunk_codes = [item[0] for item in prepared_chunks]
+                chunk_node_info = [
+                    (item[1], item[2], item[3]) for item in prepared_chunks
+                ]
 
                 if chunk_codes:
                     try:
@@ -633,8 +658,11 @@ class GraphUpdater:
                         # Prepare data for batch storage
                         embeddings_data = []
                         for idx, embedding in enumerate(batch_embeddings):
-                            node_id, qualified_name = chunk_node_info[idx]
-                            embeddings_data.append((node_id, embedding, qualified_name))
+                            chunk_text = chunk_codes[idx]
+                            node_id, qualified_name, source_path = chunk_node_info[idx]
+                            embeddings_data.append(
+                                (node_id, embedding, qualified_name, chunk_text, source_path)
+                            )
 
                         if embeddings_data:
                             batch_store_embeddings(
@@ -660,22 +688,78 @@ class GraphUpdater:
 
     @staticmethod
     def _chunk_code(
-        code: str, node_id: int, qualified_name: str
-    ) -> list[tuple[str, int, str]]:
+        code: str,
+        node_id: int,
+        qualified_name: str,
+        source_path: str | None,
+    ) -> list[tuple[str, int, str, str | None]]:
         if not code:
             return []
         max_size = settings.EMBED_MAX_CHUNK_SIZE
         if len(code) <= max_size:
-            return [(code, node_id, qualified_name)]
-        chunks: list[tuple[str, int, str]] = []
+            return [(code, node_id, qualified_name, source_path)]
+        chunks: list[tuple[str, int, str, str | None]] = []
         for i in range(0, len(code), max_size):
             chunk_code = code[i : i + max_size]
             chunk_qn = f"{qualified_name}_chunk_{len(chunks)}"
-            chunks.append((chunk_code, node_id, chunk_qn))
+            chunks.append((chunk_code, node_id, chunk_qn, source_path))
         return chunks
 
+    def _prepare_embedding_chunks(
+        self, results: list[dict[str, Any]]
+    ) -> list[tuple[str, int, str, str | None]]:
+        """Build searchable chunks with file and entity context."""
+        prepared: list[tuple[str, int, str, str | None]] = []
+        for result in results:
+            node_id = result["node_id"]
+            path = result.get("path")
+            node_type = result.get("node_type") or "Code"
+            qualified_name = result.get("qualified_name") or (
+                f"file:{path}" if path else f"node:{node_id}"
+            )
+
+            if node_type in {"Module", "File"}:
+                source_code = self._read_semantic_file(path)
+            else:
+                source_code = self._extract_source_code(
+                    qualified_name,
+                    path,
+                    result.get("start_line"),
+                    result.get("end_line"),
+                )
+
+            if not source_code:
+                continue
+
+            document = (
+                f"Entity: {qualified_name}\n"
+                f"Type: {node_type}\n"
+                f"File: {path or 'unknown'}\n\n"
+                f"{source_code}"
+            )
+            prepared.extend(
+                self._chunk_code(document, node_id, qualified_name, path)
+            )
+        return prepared
+
+    def _read_semantic_file(self, file_path: str | None) -> str | None:
+        if not file_path:
+            return None
+        resolved_path = Path(file_path)
+        if not resolved_path.is_absolute():
+            resolved_path = self.repo_path / resolved_path
+        try:
+            return resolved_path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError) as exc:
+            logger.debug("Skipping semantic file {}: {}", resolved_path, exc)
+            return None
+
     def _extract_source_code(
-        self, qualified_name: str, file_path: str, start_line: int, end_line: int
+        self,
+        qualified_name: str,
+        file_path: str | None,
+        start_line: int | None,
+        end_line: int | None,
     ) -> str | None:
         """Extract source code for a function, method or class from cached AST or file."""
         if not file_path or not start_line or not end_line:
@@ -692,24 +776,30 @@ class GraphUpdater:
             if fqn_config:
 
                 def ast_extractor_func(qname: str, path: Path) -> str | None:
-                    return find_function_source_by_fqn(
-                        root_node,
-                        qname,
-                        path,
-                        self.repo_path,
-                        self.project_name,
-                        fqn_config,
+                    return cast(
+                        str | None,
+                        find_function_source_by_fqn(
+                            root_node,
+                            qname,
+                            path,
+                            self.repo_path,
+                            self.project_name,
+                            fqn_config,
+                        ),
                     )
 
                 ast_extractor = ast_extractor_func
 
         # Use shared utility with AST-based extraction and line-based fallback
         # Pass repo_path to resolve relative paths to absolute
-        return extract_source_with_fallback(
-            file_path_obj,
-            start_line,
-            end_line,
-            qualified_name,
-            ast_extractor,
-            repo_path=self.repo_path,
+        return cast(
+            str | None,
+            extract_source_with_fallback(
+                file_path_obj,
+                start_line,
+                end_line,
+                qualified_name,
+                ast_extractor,
+                repo_path=self.repo_path,
+            ),
         )

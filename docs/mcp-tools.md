@@ -2,23 +2,39 @@
 
 The Graph-Code MCP (Model Context Protocol) server exposes the following tools for interacting with the codebase knowledge graph and RAG system. These tools can be used over stdio or HTTP (SSE) transports.
 
+All tool responses include `repo_path` so clients can always see which repository context produced the result.
+
 ## Available Tools
 
-### 1. `query_codebase`
+### 1. `quick_semantic_retrieval`
+**Title:** Quick Semantic Retrieval  
+**Description:** Fast semantic-only retrieval of matched semantic chunks (not full symbol bodies) with filename and line metadata. This path does not run the full RAG agent flow.
+
+**Parameters:**
+- `search_phrase` (string, required): Semantic phrase to search for.
+- `top_n` (integer, optional): Max number of matches (default: 5, min: 1, max: 50).
+
+**Returns:**
+- `repo_path`, `search_phrase`, `top_n`, `matches[]`
+- Each match includes: `qualified_name`, `type`, `score`, `filename`, `start_line`, `end_line`, `snippet` (chunk text)
+
+**Example:** "JWT token validation middleware"
+
+
+### 2. `query_codebase`
 **Title:** Query Codebase (RAG)  
-**Description:** Query the codebase using natural language with configurable RAG strategy. `semantic-seed-strategy` is the standard default, using semantic search to seed graph traversal and synthesis.  
+**Description:** Query the codebase using the standard agent search and answer flow. The agent can combine graph queries, source retrieval, and semantic tools as needed.
 
 **Parameters:**
 - `question` (string, required): Question about codebase functionality/implementation.
-- `strategy` (string, optional, default: `semantic-seed-strategy`): RAG retrieval strategy.
 
 **Returns:**
-- `question`, `strategy`, `response` (string: synthesized answer)
+- `repo_path`, `question`, `response` (string: synthesized answer)
 
-**Example:** \"How does user authentication work?\" (uses semantic-seed-strategy by default)
+**Example:** \"How does user authentication work?\"
 
 
-### 2. `get_status`
+### 3. `get_status`
 **Title:** Get Server Status  
 **Description:** Current configuration (repo, Memgraph, providers).  
 
@@ -27,7 +43,7 @@ The Graph-Code MCP (Model Context Protocol) server exposes the following tools f
 **Returns:**
 - `repo_path`, `batch_size`, `memgraph`, `orchestrator`, `cypher`
 
-### 3. `ingest_status`
+### 4. `ingest_status`
 **Title:** Ingest Status  
 **Description:** Last ingest time and changes since then.  
 
@@ -70,7 +86,3 @@ For manual startup of individual components:
 - **Real-time updater only:** `uv run python realtime_updater.py /path/to/repo`
 
 See [`codebase_rag/mcp/server.py`](codebase_rag/mcp/server.py) for implementation details.
-
-## Strategies
-
-- **`semantic-seed-strategy`** (default for `query_codebase`): Semantic search for seed nodes, graph expansion via relationships, LLM synthesis. Ideal for functional/implementation questions.

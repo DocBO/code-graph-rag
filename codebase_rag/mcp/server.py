@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 import json
-import time
+from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import anyio
 from loguru import logger
@@ -20,13 +20,12 @@ from starlette.responses import PlainTextResponse
 from starlette.routing import Mount
 
 from ..config import settings
-from ..graph_updater import GraphUpdater
-from ..ingest_metadata import summarize_ingest_status, write_ingest_metadata
+from ..ingest_metadata import summarize_ingest_status
 from ..parser_loader import load_parsers
 from ..runtime import initialize_services_and_agent
 from ..services.graph_service import MemgraphIngestor
 from ..services.llm import CypherGenerator
-from ..tools.semantic_seed_strategy import run_semantic_seed_strategy
+from ..tools.semantic_search import get_function_source_code, semantic_code_search_async
 
 
 class TransportLoggingMiddleware:
@@ -41,10 +40,10 @@ class TransportLoggingMiddleware:
             path = scope.get("path", "UNKNOWN")
             query_string = scope.get("query_string", b"").decode("utf-8")
             full_path = f"{path}?{query_string}" if query_string else path
-            
+
             # Log basic request info
             logger.info(f"[MCP HTTP] {method} {full_path}")
-            
+
             # Log headers for debugging 400 errors
             headers = {k.decode("utf-8"): v.decode("utf-8") for k, v in scope.get("headers", [])}
             logger.debug(f"[MCP HTTP] Headers: {headers}")
@@ -112,19 +111,27 @@ def _build_tool_schema(name: str) -> dict[str, Any]:
                     "question": {
                         "type": "string",
                         "description": "Natural language question about the codebase.",
-                    },
-                    "strategy": {
-                        "type": "string",
-                        "description": "RAG strategy. Defaults to semantic-seed-strategy.",
-                        "default": "semantic-seed-strategy",
-                    },
-                    "max_retries": {
-                        "type": "integer",
-                        "description": "Max number of retrieval rounds if context is insufficient.",
-                        "default": 2,
-                    },
+                    }
                 },
                 "required": ["question"],
+                "additionalProperties": False,
+            }
+        case "quick_semantic_retrieval":
+            return {
+                "type": "object",
+                "properties": {
+                    "search_phrase": {
+                        "type": "string",
+                        "description": "Semantic search phrase used to find relevant symbols.",
+                    },
+                    "top_n": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 50,
+                        "description": "Maximum number of semantic matches to return (default: 5).",
+                    },
+                },
+                "required": ["search_phrase"],
                 "additionalProperties": False,
             }
         case _:
@@ -176,10 +183,15 @@ class GraphCodeMCPContext:
                 batch_size=self.batch_size,
                 repo_path=self.default_repo,
             ) as ingestor:
-                return ingestor.fetch_all(cypher_query)
+                return cast(list[dict[str, Any]], ingestor.fetch_all(cypher_query))
 
         rows = await anyio.to_thread.run_sync(_task)
-        return {"question": question, "cypher": cypher_query, "results": rows}
+        return {
+            "repo_path": str(self.default_repo),
+            "question": question,
+            "cypher": cypher_query,
+            "results": rows,
+        }
 
     async def optimize_code(
         self,
@@ -205,7 +217,11 @@ class GraphCodeMCPContext:
             rag_agent = initialize_services_and_agent(str(self.default_repo), ingestor)
             response = await rag_agent.run(prompt)
 
-        return {"language": language, "response": response.output}
+        return {
+            "repo_path": str(self.default_repo),
+            "language": language,
+            "response": response.output,
+        }
 
     async def get_status(self) -> dict[str, Any]:
         """Return current configuration snapshot."""
@@ -241,30 +257,11 @@ class GraphCodeMCPContext:
             "metadata_path": str(metadata_path),
         }
 
-    async def query_codebase(
-        self,
-        question: str,
-        strategy: str = "semantic-seed-strategy",
-        max_retries: int = 2,
-    ) -> dict[str, Any]:
-        """Query the codebase using RAG with the specified strategy."""
+    async def query_codebase(self, question: str) -> dict[str, Any]:
+        """Query the codebase using the standard agent search/answer flow."""
 
         if not question.strip():
             raise ValueError("question must not be empty")
-
-        if strategy == "semantic-seed-strategy":
-            logger.info(f"Running semantic seed strategy for question: {question}")
-            response_text = await run_semantic_seed_strategy(
-                question, str(self.default_repo), max_retries=max_retries
-            )
-            return {
-                "question": question,
-                "strategy": strategy,
-                "response": response_text,
-            }
-
-        # Fallback to standard agent for other strategies or no strategy
-        prompt = f"/{strategy} {question}" if strategy else question
 
         with MemgraphIngestor(
             host=settings.MEMGRAPH_HOST,
@@ -273,13 +270,115 @@ class GraphCodeMCPContext:
             repo_path=self.default_repo,
         ) as ingestor:
             rag_agent = initialize_services_and_agent(str(self.default_repo), ingestor)
-            response = await rag_agent.run(prompt)
+            response = await rag_agent.run(question)
 
         return {
+            "repo_path": str(self.default_repo),
             "question": question,
-            "strategy": strategy,
             "response": response.output,
         }
+
+    async def quick_semantic_retrieval(
+        self,
+        search_phrase: str,
+        top_n: int = 5,
+    ) -> dict[str, Any]:
+        """Return semantic-only snippet matches without agentic reasoning."""
+
+        if not search_phrase.strip():
+            raise ValueError("search_phrase must not be empty")
+
+        try:
+            safe_top_n = max(1, min(int(top_n), 50))
+        except (TypeError, ValueError) as exc:
+            raise ValueError("top_n must be an integer") from exc
+        repo_path = str(self.default_repo)
+        semantic_matches = await semantic_code_search_async(
+            search_phrase,
+            safe_top_n,
+            repo_path=repo_path,
+        )
+
+        with MemgraphIngestor(
+            host=settings.MEMGRAPH_HOST,
+            port=settings.MEMGRAPH_PORT,
+            batch_size=self.batch_size,
+            repo_path=self.default_repo,
+        ) as ingestor:
+            formatted_matches: list[dict[str, Any]] = []
+            for match in semantic_matches:
+                node_id = match.get("node_id")
+                if node_id is None:
+                    continue
+
+                location_rows = cast(
+                    list[dict[str, Any]],
+                    ingestor.fetch_all(
+                        """
+                        MATCH (m:Module)-[:DEFINES|CONTAINS*..5]->(n)
+                        WHERE id(n) = $node_id AND n._repo_path = $repo_path
+                        RETURN m.path AS filename,
+                               n.start_line AS start_line,
+                               n.end_line AS end_line
+                        LIMIT 1
+                        """,
+                        {"node_id": node_id, "repo_path": repo_path},
+                    ),
+                )
+
+                location = location_rows[0] if location_rows else {}
+                snippet = match.get("chunk_text")
+                if not snippet:
+                    source_code = get_function_source_code(int(node_id), repo_path=repo_path)
+                    if source_code:
+                        document = (
+                            f"Entity: {match.get('qualified_name') or f'node:{node_id}'}\n"
+                            f"Type: {match.get('type') or 'Code'}\n"
+                            f"File: {location.get('filename') or 'unknown'}\n\n"
+                            f"{source_code}"
+                        )
+                        chunk_index = self._chunk_index_from_match(
+                            match.get("matched_chunk_qualified_name")
+                        )
+                        snippet = self._slice_chunk(document, chunk_index)
+
+                formatted_matches.append(
+                    {
+                        "qualified_name": match.get("qualified_name"),
+                        "type": match.get("type"),
+                        "score": match.get("score"),
+                        "filename": location.get("filename"),
+                        "start_line": location.get("start_line"),
+                        "end_line": location.get("end_line"),
+                        "snippet": snippet,
+                    }
+                )
+
+        return {
+            "repo_path": str(self.default_repo),
+            "search_phrase": search_phrase,
+            "top_n": safe_top_n,
+            "matches": formatted_matches,
+        }
+
+    @staticmethod
+    def _chunk_index_from_match(matched_chunk_qn: Any) -> int:
+        if not isinstance(matched_chunk_qn, str):
+            return 0
+        marker = "_chunk_"
+        if marker not in matched_chunk_qn:
+            return 0
+        suffix = matched_chunk_qn.rsplit(marker, 1)[-1]
+        return int(suffix) if suffix.isdigit() else 0
+
+    @staticmethod
+    def _slice_chunk(document: str, chunk_index: int) -> str:
+        max_size = settings.EMBED_MAX_CHUNK_SIZE
+        safe_index = max(0, chunk_index)
+        start = safe_index * max_size
+        if start >= len(document):
+            return document[:max_size]
+        return document[start : start + max_size]
 
     def _default_optimization_prompt(
         self, language: str, reference_document: str | None
@@ -332,11 +431,12 @@ class GraphCodeMCPServer:
                 outputSchema={
                     "type": "object",
                     "properties": {
+                        "repo_path": {"type": "string"},
                         "question": {"type": "string"},
                         "cypher": {"type": "string"},
                         "results": {"type": "array"},
                     },
-                    "required": ["question", "cypher", "results"],
+                    "required": ["repo_path", "question", "cypher", "results"],
                 },
             ),
             types.Tool(
@@ -347,10 +447,11 @@ class GraphCodeMCPServer:
                 outputSchema={
                     "type": "object",
                     "properties": {
+                        "repo_path": {"type": "string"},
                         "language": {"type": "string"},
                         "response": {"type": "string"},
                     },
-                    "required": ["language", "response"],
+                    "required": ["repo_path", "language", "response"],
                 },
             ),
             types.Tool(
@@ -408,16 +509,63 @@ class GraphCodeMCPServer:
             types.Tool(
                 name="query_codebase",
                 title="Query Codebase (RAG)",
-                description="Query the codebase using natural language questions with configurable RAG strategy. semantic-seed-strategy is the standard default.",
+                description="Query the codebase using the standard agent search and answer flow.",
                 inputSchema=_build_tool_schema("query_codebase"),
                 outputSchema={
                     "type": "object",
                     "properties": {
+                        "repo_path": {"type": "string"},
                         "question": {"type": "string"},
-                        "strategy": {"type": "string"},
                         "response": {"type": "string"},
                     },
-                    "required": ["question", "strategy", "response"],
+                    "required": ["repo_path", "question", "response"],
+                },
+            ),
+            types.Tool(
+                name="quick_semantic_retrieval",
+                title="Quick Semantic Retrieval",
+                description="Return semantic-only code snippets with filename and line metadata.",
+                inputSchema=_build_tool_schema("quick_semantic_retrieval"),
+                outputSchema={
+                    "type": "object",
+                    "properties": {
+                        "repo_path": {"type": "string"},
+                        "search_phrase": {"type": "string"},
+                        "top_n": {"type": "integer"},
+                        "matches": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "qualified_name": {
+                                        "type": ["string", "null"]
+                                    },
+                                    "type": {"type": ["string", "null"]},
+                                    "score": {"type": ["number", "null"]},
+                                    "filename": {
+                                        "type": ["string", "null"]
+                                    },
+                                    "start_line": {
+                                        "type": ["integer", "null"]
+                                    },
+                                    "end_line": {
+                                        "type": ["integer", "null"]
+                                    },
+                                    "snippet": {"type": ["string", "null"]},
+                                },
+                                "required": [
+                                    "qualified_name",
+                                    "type",
+                                    "score",
+                                    "filename",
+                                    "start_line",
+                                    "end_line",
+                                    "snippet",
+                                ],
+                            },
+                        },
+                    },
+                    "required": ["repo_path", "search_phrase", "top_n", "matches"],
                 },
             ),
         ]
@@ -474,10 +622,19 @@ class GraphCodeMCPServer:
 
             if tool_name == "query_codebase":
                 result = await self.context.query_codebase(
-                    question=args.get("question", ""),
-                    strategy=args.get("strategy", "semantic-seed-strategy")
+                    question=args.get("question", "")
                 )
                 return self._format_response(result, result["response"])
+
+            if tool_name == "quick_semantic_retrieval":
+                result = await self.context.quick_semantic_retrieval(
+                    search_phrase=args.get("search_phrase", ""),
+                    top_n=args.get("top_n", 5),
+                )
+                return self._format_response(
+                    result,
+                    f"Returned {len(result['matches'])} semantic snippet matches.",
+                )
 
             raise ValueError(f"Unsupported tool: {tool_name}")
         except Exception as exc:  # pragma: no cover - error path tested separately
@@ -538,19 +695,23 @@ async def serve_mcp_http(
         mcp_server.server, stateless=True if stateless is None else stateless
     )
 
-    async def lifespan(app: Starlette):
+    async def lifespan(app: Starlette) -> AsyncIterator[None]:
         async with session_manager.run():
             yield
 
-    async def mcp_asgi(scope, receive, send):  # ASGI callable
+    async def mcp_asgi(
+        scope: dict[str, Any],
+        receive: Callable[[], Awaitable[dict[str, Any]]],
+        send: Callable[[dict[str, Any]], Awaitable[None]],
+    ) -> None:  # ASGI callable
         if scope.get("type") != "http":
             await PlainTextResponse("Not Found", status_code=404)(scope, receive, send)
             return
 
-        async def wrapped_send(message):
+        async def wrapped_send(message: dict[str, Any]) -> None:
             if message.get("type") == "http.response.start":
                 status = message.get("status")
-                if status >= 400:
+                if isinstance(status, int) and status >= 400:
                     logger.warning(f"[MCP HTTP] Response Status: {status}")
             elif message.get("type") == "http.response.body":
                 body = message.get("body", b"")

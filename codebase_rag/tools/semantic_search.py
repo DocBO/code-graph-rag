@@ -29,23 +29,27 @@ def semantic_code_search(query: str, top_k: int = 5, repo_path: str | None = Non
     
     try:
         from ..embedder import embed_code
-        from ..vector_store import search_embeddings
+        from ..vector_store import search_embedding_matches
         from ..services.graph_service import execute_read_query
         from ..config import settings
         
         # Generate embedding for the query
         query_embedding = embed_code(query)
         
-        # Search for similar embeddings - returns (node_id, score) tuples
+        # Search for similar embeddings and keep chunk payload metadata.
         # Pass repo_path to search repo-specific collection
-        search_results = search_embeddings(query_embedding, top_k=top_k, repo_path=effective_repo_path)
+        search_results = search_embedding_matches(
+            query_embedding,
+            top_k=top_k,
+            repo_path=effective_repo_path,
+        )
         
         if not search_results:
             logger.info(f"No semantic matches found for query: {query}")
             return []
         
         # Extract node_ids for database query
-        node_ids = [node_id for node_id, _ in search_results]
+        node_ids = [int(hit["node_id"]) for hit in search_results if hit.get("node_id") is not None]
         
         # Query Memgraph for node details using read-only helper (no context manager)
         # Build the query with repo_path filter
@@ -73,7 +77,9 @@ def semantic_code_search(query: str, top_k: int = 5, repo_path: str | None = Non
         
         # Format results and preserve search order with real similarity scores
         formatted_results = []
-        for node_id, score in search_results:  # Preserve order from vector search
+        for hit in search_results:  # Preserve order from vector search
+            node_id = int(hit["node_id"])
+            score = float(hit["score"])
             if node_id in results_map:
                 result = results_map[node_id]
                 formatted_results.append({
@@ -81,7 +87,9 @@ def semantic_code_search(query: str, top_k: int = 5, repo_path: str | None = Non
                     "qualified_name": result["qualified_name"],
                     "name": result["name"],
                     "type": result["type"][0] if result["type"] else "Unknown",
-                    "score": round(score, 3)  # Use real similarity score from Qdrant
+                    "score": round(score, 3),  # Use real similarity score from Qdrant
+                    "matched_chunk_qualified_name": hit.get("matched_qualified_name"),
+                    "chunk_text": hit.get("chunk_text"),
                 })
         
         logger.info(f"Found {len(formatted_results)} semantic matches for: {query}")
@@ -118,7 +126,7 @@ async def semantic_code_search_async(query: str, top_k: int = 5, repo_path: str 
     
     try:
         from ..embedder import embed_code_async
-        from ..vector_store import search_embeddings
+        from ..vector_store import search_embedding_matches
         from ..services.graph_service import execute_read_query
         from ..config import settings
         
@@ -128,16 +136,20 @@ async def semantic_code_search_async(query: str, top_k: int = 5, repo_path: str 
         # Generate embedding for the query
         query_embedding = await embed_code_async(query)
         
-        # Search for similar embeddings - returns (node_id, score) tuples
+        # Search for similar embeddings and keep chunk payload metadata.
         # Pass repo_path to search repo-specific collection
-        search_results = search_embeddings(query_embedding, top_k=top_k, repo_path=effective_repo_path)
+        search_results = search_embedding_matches(
+            query_embedding,
+            top_k=top_k,
+            repo_path=effective_repo_path,
+        )
         
         if not search_results:
             logger.info(f"No semantic matches found for query: {query}")
             return []
         
         # Extract node_ids for database query
-        node_ids = [node_id for node_id, _ in search_results]
+        node_ids = [int(hit["node_id"]) for hit in search_results if hit.get("node_id") is not None]
         
         # Query Memgraph for node details using read-only helper (no context manager)
         # Build the query with repo_path filter
@@ -165,7 +177,9 @@ async def semantic_code_search_async(query: str, top_k: int = 5, repo_path: str 
         
         # Format results and preserve search order with real similarity scores
         formatted_results = []
-        for node_id, score in search_results:  # Preserve order from vector search
+        for hit in search_results:  # Preserve order from vector search
+            node_id = int(hit["node_id"])
+            score = float(hit["score"])
             if node_id in results_map:
                 result = results_map[node_id]
                 formatted_results.append({
@@ -173,7 +187,9 @@ async def semantic_code_search_async(query: str, top_k: int = 5, repo_path: str 
                     "qualified_name": result["qualified_name"],
                     "name": result["name"],
                     "type": result["type"][0] if result["type"] else "Unknown",
-                    "score": round(score, 3)  # Use real similarity score from Qdrant
+                    "score": round(score, 3),  # Use real similarity score from Qdrant
+                    "matched_chunk_qualified_name": hit.get("matched_qualified_name"),
+                    "chunk_text": hit.get("chunk_text"),
                 })
         
         logger.info(f"Found {len(formatted_results)} semantic matches for: {query}")

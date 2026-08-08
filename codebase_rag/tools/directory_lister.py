@@ -13,10 +13,10 @@ class DirectoryLister:
         """
         Lists the contents of a specified directory.
         """
-        target_path = self._get_safe_path(directory_path)
-        logger.info(f"Listing contents of directory: {target_path}")
-
         try:
+            target_path = self._get_safe_path(directory_path)
+            logger.info(f"Listing contents of directory: {target_path}")
+
             if not target_path.is_dir():
                 return f"Error: '{directory_path}' is not a valid directory."
 
@@ -25,6 +25,9 @@ class DirectoryLister:
             else:
                 return f"The directory '{directory_path}' is empty."
 
+        except PermissionError as e:
+            logger.warning(f"Rejected directory path {directory_path}: {e}")
+            return f"Error: {e}"
         except Exception as e:
             logger.error(f"Error listing directory {directory_path}: {e}")
             return f"Error: Could not list contents of '{directory_path}'."

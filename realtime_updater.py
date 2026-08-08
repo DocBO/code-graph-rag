@@ -16,6 +16,33 @@ from codebase_rag.parser_loader import load_parsers
 from codebase_rag.services.graph_service import MemgraphIngestor
 
 
+MODULE_SUBGRAPH_DELETE_QUERY = """
+MATCH (m:Module {path: $path, _repo_path: $repo_path})
+OPTIONAL MATCH (m)-[:DEFINES*0..]->(defined)
+OPTIONAL MATCH (defined)-[:DEFINES_METHOD*0..]->(node)
+WITH collect(m) + collect(defined) + collect(node) AS nodes
+UNWIND nodes AS node
+WITH DISTINCT node
+DETACH DELETE node
+"""
+
+MODULE_CALLS_DELETE_QUERY = """
+MATCH (m:Module {path: $path, _repo_path: $repo_path})
+OPTIONAL MATCH (m)-[:DEFINES*0..]->(defined)
+OPTIONAL MATCH (defined)-[:DEFINES_METHOD*0..]->(caller)-[r:CALLS]->()
+DELETE r
+"""
+
+MODULE_CALLER_PATHS_QUERY = """
+MATCH (changed:Module {path: $path, _repo_path: $repo_path})
+MATCH (changed)-[:DEFINES|DEFINES_METHOD*..5]->(callee)
+MATCH (caller)-[:CALLS]->(callee)
+MATCH (source:Module)-[:DEFINES|DEFINES_METHOD*..5]->(caller)
+WHERE source._repo_path = $repo_path
+RETURN DISTINCT source.path AS path
+"""
+
+
 class CodeChangeEventHandler(FileSystemEventHandler):
     """Handles file system events and updates the graph accordingly."""
 
@@ -25,6 +52,7 @@ class CodeChangeEventHandler(FileSystemEventHandler):
         self.ignore_patterns = IGNORE_PATTERNS
         self.ignore_suffixes = IGNORE_SUFFIXES
         self.pending_changes = set()
+        self.pending_changes_lock = threading.Lock()
         self.timer = None
         self.debounce_seconds = debounce_seconds
         logger.info(f"File watcher is now active (debounce: {debounce_seconds}s).")
@@ -67,97 +95,124 @@ class CodeChangeEventHandler(FileSystemEventHandler):
         if self.timer:
             self.timer.cancel()
         self.timer = threading.Timer(self.debounce_seconds, self._process_pending_changes)
+        self.timer.daemon = True
         self.timer.start()
 
     def _process_pending_changes(self):
         """Process all pending changes after debounce period."""
-        if not self.pending_changes:
-            return
+        with self.pending_changes_lock:
+            if not self.pending_changes:
+                return
+            pending_snapshot = list(self.pending_changes)
 
         start_time = time.time()
-        num_files = len(self.pending_changes)
+        num_files = len(pending_snapshot)
         logger.info(f"🔄 Starting graph update for {num_files} file(s)...")
 
-        # Process each changed file: delete old data and re-parse
-        for path_str in self.pending_changes:
-            path = Path(path_str)
-            # Check if file still exists (might have been deleted)
-            if not path.exists():
-                logger.debug(f"File {path} no longer exists, skipping re-parse.")
-                # We still need to delete it from the graph if it was deleted
+        try:
+            # Process each changed file: delete old data and re-parse
+            changed_source_paths = set()
+            affected_caller_paths = set()
+            for path_str in pending_snapshot:
+                path = Path(path_str)
+                # Check if file still exists (might have been deleted)
+                if not path.exists():
+                    logger.debug(f"File {path} no longer exists, skipping re-parse.")
+                    # We still need to delete it from the graph if it was deleted
+                    relative_path_str = str(path.relative_to(self.updater.repo_path))
+                    self.updater.ingestor.execute_write(
+                        MODULE_SUBGRAPH_DELETE_QUERY,
+                        {
+                            "path": relative_path_str,
+                            "repo_path": self.updater.ingestor.repo_path,
+                        },
+                    )
+                    self.updater.remove_file_from_state(path)
+                    continue
+
                 relative_path_str = str(path.relative_to(self.updater.repo_path))
-                delete_query = "MATCH (m:Module {path: $path, _repo_path: $repo_path})-[*0..]->(c) DETACH DELETE m, c"
+
+                logger.debug(f"Updating graph for: {relative_path_str}")
+
+                caller_modules = self.updater.ingestor.fetch_all(
+                    MODULE_CALLER_PATHS_QUERY,
+                    {
+                        "path": relative_path_str,
+                        "repo_path": self.updater.ingestor.repo_path,
+                    },
+                )
+                affected_caller_paths.update(
+                    self.updater.repo_path / caller["path"]
+                    for caller in caller_modules
+                    if caller.get("path")
+                )
+
+                # Delete old data for this file
                 self.updater.ingestor.execute_write(
-                    delete_query,
-                    {"path": relative_path_str, "repo_path": self.updater.ingestor.repo_path},
+                    MODULE_SUBGRAPH_DELETE_QUERY,
+                    {
+                        "path": relative_path_str,
+                        "repo_path": self.updater.ingestor.repo_path,
+                    },
                 )
+                logger.debug(f"Ran deletion query for path: {relative_path_str}")
+
+                # Clear in-memory state
                 self.updater.remove_file_from_state(path)
-                continue
 
-            relative_path_str = str(path.relative_to(self.updater.repo_path))
+                # Re-parse the file
+                lang_config = get_language_config(path.suffix)
+                if lang_config and lang_config.name in self.updater.parsers:
+                    result = self.updater.factory.definition_processor.process_file(
+                        path,
+                        lang_config.name,
+                        self.updater.queries,
+                        self.updater.factory.structure_processor.structural_elements,
+                    )
+                    if result:
+                        root_node, language = result
+                        self.updater.ast_cache[path] = (root_node, language)
+                        changed_source_paths.add(path)
 
-            logger.debug(f"Updating graph for: {relative_path_str}")
-
-            # Delete old data for this file
-            delete_query = "MATCH (m:Module {path: $path, _repo_path: $repo_path})-[*0..]->(c) DETACH DELETE m, c"
-            self.updater.ingestor.execute_write(
-                delete_query,
-                {"path": relative_path_str, "repo_path": self.updater.ingestor.repo_path},
-            )
-            logger.debug(f"Ran deletion query for path: {relative_path_str}")
-
-            # Clear in-memory state
-            self.updater.remove_file_from_state(path)
-
-            # Re-parse the file
-            lang_config = get_language_config(path.suffix)
-            if lang_config and lang_config.name in self.updater.parsers:
-                result = self.updater.factory.definition_processor.process_file(
-                    path,
-                    lang_config.name,
-                    self.updater.queries,
-                    self.updater.factory.structure_processor.structural_elements,
+            # Rebuild only call edges that originate in changed modules. Their
+            # symbols were removed and re-created above, so no other file needs
+            # parsing or call-resolution work for a content-only edit.
+            for path in changed_source_paths:
+                self.updater.ingestor.execute_write(
+                    MODULE_CALLS_DELETE_QUERY,
+                    {
+                        "path": str(path.relative_to(self.updater.repo_path)),
+                        "repo_path": self.updater.ingestor.repo_path,
+                    },
                 )
-                if result:
-                    root_node, language = result
-                    self.updater.ast_cache[path] = (root_node, language)
+            self.updater.process_function_calls_for_files(
+                sorted(changed_source_paths | affected_caller_paths)
+            )
 
-        # Recalculate all function call relationships once for all changes
-        logger.info("Recalculating all function call relationships for consistency...")
-        
-        # Pass 1: Re-identify structure to ensure all folders/packages exist
-        logger.info("  - Pass 1: Re-identifying structure...")
-        self.updater.factory.structure_processor.identify_structure()
-        
-        # Pass 2: Re-process all files to ensure all definitions exist
-        logger.info("  - Pass 2: Re-processing all files for definitions...")
-        self.updater._process_files()
-        
-        # Pass 3: Re-process all function calls
-        logger.info("  - Pass 3: Re-processing function calls...")
-        self.updater.ingestor.execute_write(
-            "MATCH (n)-[r:CALLS]->() WHERE n._repo_path = $repo_path DELETE r",
-            {"repo_path": self.updater.ingestor.repo_path},
-        )
-        self.updater._process_function_calls()
+            # Flush all changes
+            self.updater.ingestor.flush_all()
 
-        # Flush all changes
-        self.updater.ingestor.flush_all()
-        
-        # Update semantic embeddings for changed files
-        logger.info("  Updating semantic embeddings...")
-        changed_paths = [Path(p) for p in self.pending_changes]
-        self.updater.update_embeddings_for_files(changed_paths)
-        
-        elapsed = time.time() - start_time
-        logger.success(f"✓ Graph update completed in {elapsed:.2f}s for {num_files} file(s).")
+            # Update semantic embeddings for changed files
+            logger.info("  Updating semantic embeddings...")
+            changed_paths = [Path(p) for p in pending_snapshot]
+            self.updater.update_embeddings_for_files(changed_paths)
 
-        # Clear pending changes
-        self.pending_changes.clear()
+            elapsed = time.time() - start_time
+            logger.success(
+                f"✓ Graph update completed in {elapsed:.2f}s for {num_files} file(s)."
+            )
+
+            with self.pending_changes_lock:
+                self.pending_changes.difference_update(pending_snapshot)
+        except Exception:
+            logger.exception(
+                "Graph update failed. Keeping pending changes queued and retrying after debounce interval."
+            )
+            self._schedule_processing()
 
     def dispatch(self, event: Any) -> None:
         """A single dispatch method to handle all file system events."""
-        if event.is_directory or not self._is_relevant(event.src_path):
+        if event.is_directory:
             return
 
         # Only care about events that actually change the file content or existence
@@ -165,12 +220,39 @@ class CodeChangeEventHandler(FileSystemEventHandler):
         if event.event_type not in relevant_events:
             return
 
+        # Move events include source and destination paths. Queue both to keep
+        # graph/vector state correlated when files are renamed or relocated.
+        if event.event_type == "moved":
+            dest_path = getattr(event, "dest_path", None)
+            src_relevant = self._is_relevant(event.src_path)
+            dest_relevant = bool(dest_path) and self._is_relevant(dest_path)
+            if not src_relevant and not dest_relevant:
+                return
+
+            logger.warning(
+                "Change detected: moved from {} to {}. Queuing for processing.",
+                event.src_path,
+                dest_path,
+            )
+
+            with self.pending_changes_lock:
+                if src_relevant:
+                    self.pending_changes.add(event.src_path)
+                if dest_relevant:
+                    self.pending_changes.add(dest_path)
+            self._schedule_processing()
+            return
+
+        if not self._is_relevant(event.src_path):
+            return
+
         logger.warning(
             f"Change detected: {event.event_type} on {event.src_path}. Queuing for processing."
         )
 
         # Add to pending changes and schedule processing
-        self.pending_changes.add(event.src_path)
+        with self.pending_changes_lock:
+            self.pending_changes.add(event.src_path)
         self._schedule_processing()
 
 
@@ -187,6 +269,15 @@ def start_watcher(
     parsers, queries = load_parsers()
 
     effective_batch_size = settings.resolve_batch_size(batch_size)
+    logger.info(
+        "Startup wiring resolved: repo_path={}, memgraph={}:{}, batch_size={}, debounce={}s, skip_initial={}",
+        repo_path_obj,
+        host,
+        port,
+        effective_batch_size,
+        debounce,
+        skip_initial,
+    )
 
     with MemgraphIngestor(
         host=host,

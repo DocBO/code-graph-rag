@@ -1,3 +1,4 @@
+import threading
 from collections import defaultdict
 from datetime import UTC, datetime
 from pathlib import Path
@@ -5,6 +6,20 @@ from typing import Any
 
 import mgclient
 from loguru import logger
+
+
+# Markers that indicate the underlying Memgraph connection was lost or closed.
+# When these appear, the operation should be retried on a fresh connection.
+CONNECTION_ERROR_MARKERS = (
+    "failed to receive chunk size",
+    "connection closed by server",
+    "connection reset",
+    "broken pipe",
+    "socket error",
+    "transport failure",
+    "server closed the connection",
+    "connection is closed",
+)
 
 
 def execute_read_query(
@@ -76,12 +91,17 @@ class MemgraphIngestor:
         port: int,
         batch_size: int = 1000,
         repo_path: str | Path | None = None,
+        connect_retries: int = 30,
     ):
         self._host = host
         self._port = port
+        self._connect_retries = connect_retries
         if batch_size < 1:
             raise ValueError("batch_size must be a positive integer")
         self.batch_size = batch_size
+        # Guards access to self.conn so background threads (e.g. the real-time
+        # watcher) can reconnect safely without racing another query.
+        self._lock = threading.RLock()
         self.conn: mgclient.Connection | None = None
         self.node_buffer: list[tuple[str, dict[str, Any]]] = []
         self.relationship_buffer: list[tuple[tuple, str, tuple, dict | None]] = []
@@ -102,11 +122,35 @@ class MemgraphIngestor:
 
     def __enter__(self) -> "MemgraphIngestor":
         logger.info(f"Connecting to Memgraph at {self._host}:{self._port}...")
-        conn = mgclient.connect(host=self._host, port=self._port)
-        conn.autocommit = True
-        self.conn = conn
+        self._connect_with_retry()
         logger.info("Successfully connected to Memgraph.")
         return self
+
+    def _connect_with_retry(self) -> None:
+        """Connect to Memgraph, retrying with backoff if the server is down.
+
+        Memgraph can be temporarily unavailable (e.g. restarting or recovering
+        after an OOM kill), so the caller should not die on the first refusal.
+        """
+        import time
+
+        max_attempts = self._connect_retries
+        backoff = 1.0
+        for attempt in range(1, max_attempts + 1):
+            try:
+                conn = mgclient.connect(host=self._host, port=self._port)
+                conn.autocommit = True
+                self.conn = conn
+                return
+            except Exception as e:
+                if attempt >= max_attempts:
+                    raise
+                logger.warning(
+                    f"Connection to Memgraph failed (attempt {attempt}/{max_attempts}): {e}. "
+                    f"Retrying in {backoff:.0f}s..."
+                )
+                time.sleep(backoff)
+                backoff = min(backoff * 2, 15.0)
 
     def __exit__(
         self, exc_type: type | None, exc_val: Exception | None, exc_tb: Any
@@ -152,51 +196,101 @@ class MemgraphIngestor:
             return ""
         return f"({node_var}._repo_path = '{self.repo_path}') AND "
 
+    @staticmethod
+    def _is_connection_error(exc: BaseException) -> bool:
+        """Return True if the exception indicates a lost/dead connection."""
+        msg = str(exc).lower()
+        return any(marker in msg for marker in CONNECTION_ERROR_MARKERS)
+
+    def _reconnect(self) -> None:
+        """Establish a fresh Memgraph connection, replacing a dead one.
+
+        Retries with backoff (via _connect_with_retry) so a transient outage
+        while Memgraph is restarting does not kill the caller. Must be called
+        with self._lock held.
+        """
+        if self.conn is not None:
+            try:
+                self.conn.close()
+            except Exception:
+                pass
+        self.conn = None
+        self._connect_with_retry()
+        logger.info(f"Reconnected to Memgraph at {self._host}:{self._port}.")
+
+    def _ensure_connected(self) -> None:
+        """Reconnect if the current connection is bad or closed.
+
+        Must be called with self._lock held.
+        """
+        if self.conn is None:
+            logger.warning("Memgraph connection is missing. Reconnecting...")
+            self._connect_with_retry()
+            if self.conn is None:
+                raise ConnectionError("Not connected to Memgraph.")
+            return
+        status = getattr(self.conn, "status", None)
+        if status in (mgclient.CONN_STATUS_BAD, mgclient.CONN_STATUS_CLOSED):
+            logger.warning("Memgraph connection is bad/closed. Reconnecting...")
+            self._reconnect()
+
     def _execute_query(self, query: str, params: dict[str, Any] | None = None) -> list:
-        if not self.conn:
-            raise ConnectionError("Not connected to Memgraph.")
         params = params or {}
-        cursor = None
-        try:
-            cursor = self.conn.cursor()
-            logger.debug(f"Executing query: {query[:100]}... with params: {params}")
-            cursor.execute(query, params)
-            if not cursor.description:
-                return []
-            column_names = [desc.name for desc in cursor.description]
-            # Use fetchone() in a loop to avoid loading entire result set into memory
-            logger.debug("Fetching results from cursor...")
-            results = []
-            row_count = 0
-            while True:
-                row = cursor.fetchone()
-                if row is None:
-                    break
-                results.append(dict(zip(column_names, row)))
-                row_count += 1
-                if row_count % 1000 == 0:
-                    logger.debug(f"  Fetched {row_count} rows so far...")
-            logger.debug(f"Query completed. Total results: {len(results)}")
-            return results
-        except Exception as e:
-            error_str = str(e).lower()
-            # Check for common Cypher syntax errors
-            if "unexpected" in error_str and ("eof" in error_str or ";" in error_str):
-                logger.error(
-                    f"!!! Cypher Syntax Error (likely invalid semicolon or syntax): {e}"
-                )
-                logger.error(f"    Query: {query}")
-                logger.error(
-                    f"    Hint: Cypher does not use semicolons. Ensure query is valid."
-                )
-            elif "already exists" not in error_str and "constraint" not in error_str:
-                logger.error(f"!!! Cypher Error: {e}")
-                logger.error(f"    Query: {query}")
-                logger.error(f"    Params: {params}")
-            raise
-        finally:
-            if cursor:
-                cursor.close()
+        with self._lock:
+            self._ensure_connected()
+            for attempt in range(2):
+                cursor = None
+                try:
+                    cursor = self.conn.cursor()
+                    logger.debug(f"Executing query: {query[:100]}... with params: {params}")
+                    cursor.execute(query, params)
+                    if not cursor.description:
+                        return []
+                    column_names = [desc.name for desc in cursor.description]
+                    # Use fetchone() in a loop to avoid loading entire result set into memory
+                    logger.debug("Fetching results from cursor...")
+                    results = []
+                    row_count = 0
+                    while True:
+                        row = cursor.fetchone()
+                        if row is None:
+                            break
+                        results.append(dict(zip(column_names, row)))
+                        row_count += 1
+                        if row_count % 1000 == 0:
+                            logger.debug(f"  Fetched {row_count} rows so far...")
+                    logger.debug(f"Query completed. Total results: {len(results)}")
+                    return results
+                except Exception as e:
+                    if attempt == 0 and self._is_connection_error(e):
+                        logger.error(
+                            f"Connection error during query (attempt {attempt + 1}/2): {e}. Reconnecting and retrying."
+                        )
+                        # _reconnect retries with backoff until Memgraph is
+                        # available; if it ultimately fails it raises.
+                        self._reconnect()
+                        continue
+                    error_str = str(e).lower()
+                    # Check for common Cypher syntax errors
+                    if "unexpected" in error_str and ("eof" in error_str or ";" in error_str):
+                        logger.error(
+                            f"!!! Cypher Syntax Error (likely invalid semicolon or syntax): {e}"
+                        )
+                        logger.error(f"    Query: {query}")
+                        logger.error(
+                            f"    Hint: Cypher does not use semicolons. Ensure query is valid."
+                        )
+                    elif "already exists" not in error_str and "constraint" not in error_str:
+                        logger.error(f"!!! Cypher Error: {e}")
+                        logger.error(f"    Query: {query}")
+                        logger.error(f"    Params: {params}")
+                    raise
+                finally:
+                    if cursor:
+                        try:
+                            cursor.close()
+                        except Exception:
+                            pass
 
     def _execute_batch(
         self,
@@ -204,34 +298,47 @@ class MemgraphIngestor:
         params_list: list[dict[str, Any]],
         extra_params: dict[str, Any] | None = None,
     ) -> None:
-        if not self.conn or not params_list:
+        if not params_list:
             return
-        cursor = None
-        try:
-            cursor = self.conn.cursor()
-            batch_query = f"UNWIND $batch AS row\n{query}"
+        with self._lock:
+            self._ensure_connected()
+            for attempt in range(2):
+                cursor = None
+                try:
+                    cursor = self.conn.cursor()
+                    batch_query = f"UNWIND $batch AS row\n{query}"
 
-            full_params = {"batch": params_list}
-            if extra_params:
-                full_params.update(extra_params)
+                    full_params = {"batch": params_list}
+                    if extra_params:
+                        full_params.update(extra_params)
 
-            cursor.execute(batch_query, full_params)
-        except Exception as e:
-            if "already exists" not in str(e).lower():
-                logger.error(f"!!! Batch Cypher Error: {e}")
-                logger.error(f"    Query: {query}")
-                if len(params_list) > 10:
-                    logger.error(
-                        "    Params (first 10 of {}): {}...",
-                        len(params_list),
-                        params_list[:10],
-                    )
-                else:
-                    logger.error(f"    Params: {params_list}")
-            raise
-        finally:
-            if cursor:
-                cursor.close()
+                    cursor.execute(batch_query, full_params)
+                    return
+                except Exception as e:
+                    if attempt == 0 and self._is_connection_error(e):
+                        logger.error(
+                            f"Connection error during batch query (attempt {attempt + 1}/2): {e}. Reconnecting and retrying."
+                        )
+                        self._reconnect()
+                        continue
+                    if "already exists" not in str(e).lower():
+                        logger.error(f"!!! Batch Cypher Error: {e}")
+                        logger.error(f"    Query: {query}")
+                        if len(params_list) > 10:
+                            logger.error(
+                                "    Params (first 10 of {}): {}...",
+                                len(params_list),
+                                params_list[:10],
+                            )
+                        else:
+                            logger.error(f"    Params: {params_list}")
+                    raise
+                finally:
+                    if cursor:
+                        try:
+                            cursor.close()
+                        except Exception:
+                            pass
 
     def _execute_batch_with_return(
         self,
@@ -240,38 +347,50 @@ class MemgraphIngestor:
         extra_params: dict[str, Any] | None = None,
     ) -> list[dict[str, Any]]:
         """Execute a batch query that returns results."""
-        if not self.conn or not params_list:
+        if not params_list:
             return []
-        cursor = None
-        try:
-            cursor = self.conn.cursor()
-            batch_query = f"UNWIND $batch AS row\n{query}"
+        with self._lock:
+            self._ensure_connected()
+            for attempt in range(2):
+                cursor = None
+                try:
+                    cursor = self.conn.cursor()
+                    batch_query = f"UNWIND $batch AS row\n{query}"
 
-            full_params = {"batch": params_list}
-            if extra_params:
-                full_params.update(extra_params)
+                    full_params = {"batch": params_list}
+                    if extra_params:
+                        full_params.update(extra_params)
 
-            logger.debug(f"Executing batch query with {len(params_list)} items...")
-            cursor.execute(batch_query, full_params)
-            if not cursor.description:
-                return []
-            column_names = [desc.name for desc in cursor.description]
-            # Use fetchone() in a loop to avoid loading entire result set into memory
-            results = []
-            while True:
-                row = cursor.fetchone()
-                if row is None:
-                    break
-                results.append(dict(zip(column_names, row)))
-            logger.debug(f"Batch query returned {len(results)} results")
-            return results
-        except Exception as e:
-            logger.error(f"!!! Batch Cypher Error: {e}")
-            logger.error(f"    Query: {query}")
-            raise
-        finally:
-            if cursor:
-                cursor.close()
+                    logger.debug(f"Executing batch query with {len(params_list)} items...")
+                    cursor.execute(batch_query, full_params)
+                    if not cursor.description:
+                        return []
+                    column_names = [desc.name for desc in cursor.description]
+                    # Use fetchone() in a loop to avoid loading entire result set into memory
+                    results = []
+                    while True:
+                        row = cursor.fetchone()
+                        if row is None:
+                            break
+                        results.append(dict(zip(column_names, row)))
+                    logger.debug(f"Batch query returned {len(results)} results")
+                    return results
+                except Exception as e:
+                    if attempt == 0 and self._is_connection_error(e):
+                        logger.error(
+                            f"Connection error during batch query (attempt {attempt + 1}/2): {e}. Reconnecting and retrying."
+                        )
+                        self._reconnect()
+                        continue
+                    logger.error(f"!!! Batch Cypher Error: {e}")
+                    logger.error(f"    Query: {query}")
+                    raise
+                finally:
+                    if cursor:
+                        try:
+                            cursor.close()
+                        except Exception:
+                            pass
 
     def clean_database(self) -> None:
         logger.info(f"--- Cleaning database for repo: {self.repo_path} ---")

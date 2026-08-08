@@ -17,6 +17,23 @@ class VectorStoreError(Exception):
     pass
 
 
+def _unpack_embedding_row(
+    row:
+    tuple[int, list[float], str]
+    | tuple[int, list[float], str, str]
+    | tuple[int, list[float], str, str, str],
+) -> tuple[int, list[float], str, str | None, str | None]:
+    """Normalize embedding rows to (node_id, embedding, qualified_name, chunk_text, file_path)."""
+    if len(row) == 3:
+        node_id, embedding, qualified_name = row
+        return node_id, embedding, qualified_name, None, None
+    if len(row) == 4:
+        node_id, embedding, qualified_name, chunk_text = row
+        return node_id, embedding, qualified_name, chunk_text, None
+    node_id, embedding, qualified_name, chunk_text, file_path = row
+    return node_id, embedding, qualified_name, chunk_text, file_path
+
+
 def _use_remote_qdrant() -> bool:
     return bool(settings.QDRANT_HOST and settings.QDRANT_PORT)
 
@@ -58,7 +75,14 @@ def get_stable_point_id(qualified_name: str) -> int:
 
 if has_qdrant_client():
     from qdrant_client import QdrantClient
-    from qdrant_client.models import Distance, PointStruct, VectorParams
+    from qdrant_client.models import (
+        Distance,
+        FieldCondition,
+        Filter,
+        MatchAny,
+        PointStruct,
+        VectorParams,
+    )
 
     _CLIENT = None
     _COLLECTION_NAME = None
@@ -115,7 +139,11 @@ if has_qdrant_client():
         batch_store_embeddings([(node_id, embedding, qualified_name)], repo_path)
 
     def batch_store_embeddings(
-        embeddings_data: list[tuple[int, list[float], str]],
+        embeddings_data: list[
+            tuple[int, list[float], str]
+            | tuple[int, list[float], str, str]
+            | tuple[int, list[float], str, str, str]
+        ],
         repo_path: str | Path | None = None,
     ) -> None:
         """Store multiple code embeddings in Qdrant in a single batch."""
@@ -128,13 +156,21 @@ if has_qdrant_client():
             _ensure_collection_exists(client, collection_name)
 
             points = []
-            for node_id, embedding, qualified_name in embeddings_data:
+            for row in embeddings_data:
+                node_id, embedding, qualified_name, chunk_text, file_path = (
+                    _unpack_embedding_row(row)
+                )
                 stable_point_id = get_stable_point_id(qualified_name)
+                payload = {"node_id": node_id, "qualified_name": qualified_name}
+                if chunk_text is not None:
+                    payload["chunk_text"] = chunk_text
+                if file_path is not None:
+                    payload["file_path"] = file_path
                 points.append(
                     PointStruct(
                         id=stable_point_id,
                         vector=embedding,
-                        payload={"node_id": node_id, "qualified_name": qualified_name},
+                        payload=payload,
                     )
                 )
 
@@ -148,12 +184,43 @@ if has_qdrant_client():
             )
             raise
 
-    def search_embeddings(
+    def delete_embeddings_for_files(
+        file_paths: list[str],
+        repo_path: str | Path | None = None,
+    ) -> None:
+        """Delete embeddings whose payload file_path matches any provided path."""
+        normalized_paths = sorted({str(Path(p)) for p in file_paths if p})
+        if not normalized_paths:
+            return
+
+        try:
+            client = get_qdrant_client()
+            collection_name = get_collection_name(repo_path)
+            _ensure_collection_exists(client, collection_name)
+            selector = Filter(
+                must=[
+                    FieldCondition(
+                        key="file_path",
+                        match=MatchAny(any=normalized_paths),
+                    )
+                ]
+            )
+            client.delete(collection_name=collection_name, points_selector=selector)
+            logger.info(
+                "Deleted embeddings for {} changed file(s) in {}",
+                len(normalized_paths),
+                collection_name,
+            )
+        except Exception as e:
+            logger.warning(f"Failed to delete embeddings for changed files: {e}")
+            raise
+
+    def search_embedding_matches(
         query_embedding: list[float],
         top_k: int = 5,
         repo_path: str | Path | None = None,
-    ) -> list[tuple[int, float]]:
-        """Search for similar code embeddings."""
+    ) -> list[dict[str, Any]]:
+        """Search similar code embeddings and retain matched chunk payload metadata."""
         try:
             client = get_qdrant_client()
             collection_name = get_collection_name(repo_path)
@@ -164,10 +231,33 @@ if has_qdrant_client():
                 query_vector=query_embedding,
                 limit=top_k,
             )
-            return [(hit.payload["node_id"], hit.score) for hit in hits]
+            matches: list[dict[str, Any]] = []
+            for hit in hits:
+                payload = hit.payload or {}
+                node_id = payload.get("node_id")
+                if node_id is None:
+                    continue
+                matches.append(
+                    {
+                        "node_id": node_id,
+                        "score": hit.score,
+                        "matched_qualified_name": payload.get("qualified_name"),
+                        "chunk_text": payload.get("chunk_text"),
+                    }
+                )
+            return matches
         except Exception as e:
-            logger.warning(f"Failed to search embeddings: {e}")
+            logger.warning(f"Failed to search embedding matches: {e}")
             return []
+
+    def search_embeddings(
+        query_embedding: list[float],
+        top_k: int = 5,
+        repo_path: str | Path | None = None,
+    ) -> list[tuple[int, float]]:
+        """Search for similar code embeddings."""
+        matches = search_embedding_matches(query_embedding, top_k, repo_path)
+        return [(int(match["node_id"]), float(match["score"])) for match in matches]
 
     def clean_collection(repo_path: str | Path | None = None) -> None:
         """Delete all vectors from a Qdrant collection.
@@ -251,7 +341,11 @@ elif _use_remote_qdrant():
         batch_store_embeddings([(node_id, embedding, qualified_name)], repo_path)
 
     def batch_store_embeddings(
-        embeddings_data: list[tuple[int, list[float], str]],
+        embeddings_data: list[
+            tuple[int, list[float], str]
+            | tuple[int, list[float], str, str]
+            | tuple[int, list[float], str, str, str]
+        ],
         repo_path: str | Path | None = None,
     ) -> None:
         """Store multiple code embeddings in remote Qdrant via HTTP in a single batch."""
@@ -267,16 +361,24 @@ elif _use_remote_qdrant():
                 headers["api-key"] = settings.QDRANT_API_KEY
 
             points = []
-            for node_id, embedding, qualified_name in embeddings_data:
+            for row in embeddings_data:
+                node_id, embedding, qualified_name, chunk_text, file_path = (
+                    _unpack_embedding_row(row)
+                )
                 stable_point_id = get_stable_point_id(qualified_name)
+                payload = {
+                    "node_id": node_id,
+                    "qualified_name": qualified_name,
+                }
+                if chunk_text is not None:
+                    payload["chunk_text"] = chunk_text
+                if file_path is not None:
+                    payload["file_path"] = file_path
                 points.append(
                     {
                         "id": stable_point_id,
                         "vector": embedding,
-                        "payload": {
-                            "node_id": node_id,
-                            "qualified_name": qualified_name,
-                        },
+                        "payload": payload,
                     }
                 )
 
@@ -292,12 +394,53 @@ elif _use_remote_qdrant():
             )
             raise
 
-    def search_embeddings(
+    def delete_embeddings_for_files(
+        file_paths: list[str],
+        repo_path: str | Path | None = None,
+    ) -> None:
+        """Delete embeddings whose payload file_path matches any provided path."""
+        normalized_paths = sorted({str(Path(p)) for p in file_paths if p})
+        if not normalized_paths:
+            return
+
+        try:
+            collection_name = _get_collection_name(repo_path)
+            headers = {"Content-Type": "application/json"}
+            if settings.QDRANT_API_KEY:
+                headers["api-key"] = settings.QDRANT_API_KEY
+
+            url = _build_qdrant_url(f"/collections/{collection_name}/points/delete")
+            payload = {
+                "filter": {
+                    "must": [
+                        {
+                            "key": "file_path",
+                            "match": {"any": normalized_paths},
+                        }
+                    ]
+                }
+            }
+            resp = httpx.post(url, json=payload, headers=headers, timeout=10.0)
+            if resp.status_code >= 400:
+                logger.warning(
+                    f"Failed to delete embeddings for changed files: {resp.text}"
+                )
+                raise VectorStoreError(resp.text)
+            logger.info(
+                "Deleted embeddings for {} changed file(s) in {}",
+                len(normalized_paths),
+                collection_name,
+            )
+        except Exception as e:
+            logger.warning(f"Failed to delete embeddings for changed files: {e}")
+            raise
+
+    def search_embedding_matches(
         query_embedding: list[float],
         top_k: int = 5,
         repo_path: str | Path | None = None,
-    ) -> list[tuple[int, float]]:
-        """Search for similar code embeddings via HTTP."""
+    ) -> list[dict[str, Any]]:
+        """Search similar code embeddings and retain matched chunk payload metadata."""
         try:
             collection_name = _get_collection_name(repo_path)
             headers = {"Content-Type": "application/json"}
@@ -309,17 +452,37 @@ elif _use_remote_qdrant():
 
             resp = httpx.post(url, json=payload, headers=headers, timeout=10.0)
             if resp.status_code >= 400:
-                logger.warning(f"Failed to search embeddings: {resp.text}")
+                logger.warning(f"Failed to search embedding matches: {resp.text}")
                 return []
 
             data = resp.json()
-            return [
-                (hit["payload"]["node_id"], hit["score"])
-                for hit in data.get("result", [])
-            ]
+            matches: list[dict[str, Any]] = []
+            for hit in data.get("result", []):
+                payload_data = hit.get("payload", {})
+                node_id = payload_data.get("node_id")
+                if node_id is None:
+                    continue
+                matches.append(
+                    {
+                        "node_id": node_id,
+                        "score": hit.get("score"),
+                        "matched_qualified_name": payload_data.get("qualified_name"),
+                        "chunk_text": payload_data.get("chunk_text"),
+                    }
+                )
+            return matches
         except Exception as e:
-            logger.warning(f"Failed to search embeddings: {e}")
+            logger.warning(f"Failed to search embedding matches: {e}")
             return []
+
+    def search_embeddings(
+        query_embedding: list[float],
+        top_k: int = 5,
+        repo_path: str | Path | None = None,
+    ) -> list[tuple[int, float]]:
+        """Search for similar code embeddings via HTTP."""
+        matches = search_embedding_matches(query_embedding, top_k, repo_path)
+        return [(int(match["node_id"]), float(match["score"])) for match in matches]
 
     def clean_collection(repo_path: str | Path | None = None) -> None:
         """Delete all vectors from a Qdrant collection via HTTP.
@@ -363,11 +526,23 @@ else:
         raise VectorStoreError("Qdrant client not available. Cannot store embeddings.")
 
     def batch_store_embeddings(
-        embeddings_data: list[tuple[int, list[float], str]],
+        embeddings_data: list[
+            tuple[int, list[float], str]
+            | tuple[int, list[float], str, str]
+            | tuple[int, list[float], str, str, str]
+        ],
         repo_path: str | Path | None = None,
     ) -> None:
         raise VectorStoreError(
             "Qdrant client not available. Cannot store batch embeddings."
+        )
+
+    def delete_embeddings_for_files(
+        file_paths: list[str],
+        repo_path: str | Path | None = None,
+    ) -> None:
+        raise VectorStoreError(
+            "Qdrant client not available. Cannot delete file-scoped embeddings."
         )
 
     def search_embeddings(
@@ -375,6 +550,13 @@ else:
         top_k: int = 5,
         repo_path: str | Path | None = None,
     ) -> list[tuple[int, float]]:
+        return []
+
+    def search_embedding_matches(
+        query_embedding: list[float],
+        top_k: int = 5,
+        repo_path: str | Path | None = None,
+    ) -> list[dict[str, Any]]:
         return []
 
     def clean_collection(repo_path: str | Path | None = None) -> None:

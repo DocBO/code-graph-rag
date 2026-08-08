@@ -16,13 +16,16 @@ Examples:
     uv run python start_mcp_with_watcher.py ~/my-project --host localhost --port 7687
 
     # With HTTP transport
-    uv run python start_mcp_with_watcher.py ~/my-project --transport http --host 127.0.0.1 --port 8765
+    uv run python start_mcp_with_watcher.py ~/my-project --transport http --mcp-host 127.0.0.1 --mcp-port 8765
 
     # With custom debounce delay
     uv run python start_mcp_with_watcher.py ~/my-project --debounce 30
 """
 
 import argparse
+import os
+import shlex
+import socket
 import subprocess
 import sys
 from pathlib import Path
@@ -60,6 +63,15 @@ def _run_embedding_only(
         print()
 
 
+def _can_connect(host: str, port: int, timeout: float = 2.0) -> bool:
+    """Return True if a TCP connection can be established to host:port."""
+    try:
+        with socket.create_connection((host, port), timeout=timeout):
+            return True
+    except OSError:
+        return False
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Start Graph-Code MCP server with real-time watcher",
@@ -68,7 +80,7 @@ def main():
 Examples:
   %(prog)s ~/my-project
   %(prog)s ~/my-project --debounce 30
-  %(prog)s ~/my-project --transport http --port 8765
+    %(prog)s ~/my-project --transport http --mcp-port 8765
         """,
     )
 
@@ -165,6 +177,20 @@ Examples:
     print()
 
     updater_process = None
+    child_env = os.environ.copy()
+    child_env["MEMGRAPH_HOST"] = args.host
+    child_env["MEMGRAPH_PORT"] = str(args.port)
+    print(
+        "🧭 Wiring: child process Memgraph endpoint "
+        f"MEMGRAPH_HOST={child_env['MEMGRAPH_HOST']} "
+        f"MEMGRAPH_PORT={child_env['MEMGRAPH_PORT']}"
+    )
+
+    # Preflight Memgraph connectivity before launching child processes.
+    if not _can_connect(args.host, args.port):
+        print(f"❌ No Memgraph available at {args.host}:{args.port}.", file=sys.stderr)
+        print("Stopping startup: updater and MCP server were not started.", file=sys.stderr)
+        sys.exit(1)
 
     if args.only_embedding:
         _run_embedding_only(repo_path, args.host, args.port, args.batch_size)
@@ -173,28 +199,20 @@ Examples:
         print("Starting real-time updater in background...")
         updater_cmd = [
             sys.executable,
-            "-m",
-            "codebase_rag.main" if repo_path.parent.name == "code-graph-rag" else "realtime_updater",
+            "realtime_updater.py",
+            str(repo_path),
+            "--host",
+            args.host,
+            "--port",
+            str(args.port),
+            "--debounce",
+            str(args.debounce),
         ]
-
-        # Determine the correct command
-        try:
-            # Try using the main module
-            updater_cmd = [
-                sys.executable,
-                "realtime_updater.py",
-                str(repo_path),
-                "--host",
-                args.host,
-                "--port",
-                str(args.port),
-                "--debounce",
-                str(args.debounce),
-            ]
-            if args.no_update:
-                updater_cmd.append("--no-update")
-        except Exception:
-            pass
+        if args.batch_size:
+            updater_cmd.extend(["--batch-size", str(args.batch_size)])
+        if args.no_update:
+            updater_cmd.append("--no-update")
+        print(f"🧭 Updater command: {shlex.join(updater_cmd)}")
 
         try:
             updater_process = subprocess.Popen(
@@ -203,6 +221,7 @@ Examples:
                 stderr=subprocess.STDOUT,
                 text=True,
                 bufsize=1,  # Line buffering
+                env=child_env,
             )
             print(f"✓ Real-time updater started (PID: {updater_process.pid})")
             
@@ -230,10 +249,6 @@ Examples:
         "mcp",
         "--repo-path",
         str(repo_path),
-        "--host",
-        args.host,
-        "--port",
-        str(args.port),
     ]
 
     if args.batch_size:
@@ -253,6 +268,7 @@ Examples:
         print(f"🔌 MCP Server: http://{args.mcp_host}:{args.mcp_port}{args.path}")
     else:
         print("🔌 MCP Server: stdio transport")
+    print(f"🧭 MCP command: {shlex.join(mcp_cmd)}")
 
     print()
     print("=" * 60)
@@ -263,7 +279,7 @@ Examples:
     # Start the MCP server in the foreground
     try:
         print("Starting MCP server...")
-        mcp_process = subprocess.run(mcp_cmd)
+        mcp_process = subprocess.run(mcp_cmd, env=child_env)
         mcp_exit_code = mcp_process.returncode
     except KeyboardInterrupt:
         print("\n⏹️  Shutting down...")

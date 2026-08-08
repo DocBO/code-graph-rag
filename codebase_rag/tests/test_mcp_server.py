@@ -33,10 +33,12 @@ class StubContext:
             "duration_ms": 5.0,
         }
 
-    async def run_query(self, question: str) -> dict[str, object]:
-        self.calls.append(("query", {"question": question}))
+    async def run_query(
+        self, question: str, repo_path: str | None = None
+    ) -> dict[str, object]:
+        self.calls.append(("query", {"question": question, "repo_path": repo_path}))
         return {
-            "repo_path": "/workspace",
+            "repo_path": repo_path or "/workspace",
             "question": question,
             "cypher": "MATCH (n) RETURN n",
             "results": [{"name": "Example"}],
@@ -47,6 +49,7 @@ class StubContext:
         language: str,
         instruction: str | None = None,
         reference_document: str | None = None,
+        repo_path: str | None = None,
     ) -> dict[str, object]:
         self.calls.append(
             (
@@ -55,11 +58,12 @@ class StubContext:
                     "language": language,
                     "instruction": instruction,
                     "ref": reference_document,
+                    "repo_path": repo_path,
                 },
             )
         )
         return {
-            "repo_path": "/workspace",
+            "repo_path": repo_path or "/workspace",
             "language": language,
             "response": "Optimization response",
         }
@@ -83,25 +87,36 @@ class StubContext:
             "metadata_path": "/workspace/.graphcode_ingest.json",
         }
 
-    async def query_codebase(self, question: str) -> dict[str, object]:
-        self.calls.append(("query_codebase", {"question": question}))
+    async def query_codebase(
+        self, question: str, repo_path: str | None = None
+    ) -> dict[str, object]:
+        self.calls.append(
+            ("query_codebase", {"question": question, "repo_path": repo_path})
+        )
         return {
-            "repo_path": "/workspace",
+            "repo_path": repo_path or "/workspace",
             "question": question,
             "response": "Standard agent response",
         }
 
     async def quick_semantic_retrieval(
-        self, search_phrase: str, top_n: int = 5
+        self,
+        search_phrase: str,
+        top_n: int = 5,
+        repo_path: str | None = None,
     ) -> dict[str, object]:
         self.calls.append(
             (
                 "quick_semantic_retrieval",
-                {"search_phrase": search_phrase, "top_n": top_n},
+                {
+                    "search_phrase": search_phrase,
+                    "top_n": top_n,
+                    "repo_path": repo_path,
+                },
             )
         )
         return {
-            "repo_path": "/workspace",
+            "repo_path": repo_path or "/workspace",
             "search_phrase": search_phrase,
             "top_n": top_n,
             "matches": [
@@ -162,7 +177,8 @@ def test_mcp_server_lists_tools_and_invokes_them() -> None:
                 )
                 assert query_codebase_tool.inputSchema["required"] == ["question"]
                 assert set(query_codebase_tool.inputSchema["properties"]) == {
-                    "question"
+                    "question",
+                    "repo_path",
                 }
                 assert set(query_codebase_tool.outputSchema["properties"]) == {
                     "repo_path",
@@ -235,11 +251,11 @@ def test_mcp_server_lists_tools_and_invokes_them() -> None:
     assert any(call[0] == "optimize" for call in context.calls)
     assert (
         "query_codebase",
-        {"question": "How is the frontend rendered?"},
+        {"question": "How is the frontend rendered?", "repo_path": None},
     ) in context.calls
     assert (
         "quick_semantic_retrieval",
-        {"search_phrase": "login handler", "top_n": 3},
+        {"search_phrase": "login handler", "top_n": 3, "repo_path": None},
     ) in context.calls
 
 
@@ -297,28 +313,20 @@ async def test_mcp_context_quick_semantic_retrieval(
 ) -> None:
     captured: dict[str, object] = {}
 
-    class DummyIngestor:
-        def __init__(self, **kwargs: object) -> None:
-            captured["ingestor_kwargs"] = kwargs
-
-        def __enter__(self) -> "DummyIngestor":
-            return self
-
-        def __exit__(self, *args: object) -> None:
-            return None
-
-        def fetch_all(
-            self, query: str, params: dict[str, object]
-        ) -> list[dict[str, object]]:
-            captured["location_query"] = query
-            captured["location_params"] = params
-            return [
-                {
-                    "filename": "src/auth.py",
-                    "start_line": 10,
-                    "end_line": 22,
-                }
-            ]
+    def fake_execute_read_query(
+        host: str, port: int, query: str, params: dict[str, object] | None = None
+    ) -> list[dict[str, object]]:
+        captured["location_host"] = host
+        captured["location_port"] = port
+        captured["location_query"] = query
+        captured["location_params"] = params
+        return [
+            {
+                "filename": "src/auth.py",
+                "start_line": 10,
+                "end_line": 22,
+            }
+        ]
 
     async def fake_semantic_code_search_async(
         query: str, top_k: int = 5, repo_path: str | None = None
@@ -344,7 +352,6 @@ async def test_mcp_context_quick_semantic_retrieval(
         captured["source_repo_path"] = repo_path
         return "def login(user): ..."
 
-    monkeypatch.setattr("codebase_rag.mcp.server.MemgraphIngestor", DummyIngestor)
     monkeypatch.setattr(
         "codebase_rag.mcp.server.semantic_code_search_async",
         fake_semantic_code_search_async,
@@ -352,6 +359,10 @@ async def test_mcp_context_quick_semantic_retrieval(
     monkeypatch.setattr(
         "codebase_rag.mcp.server.get_function_source_code",
         fake_get_function_source_code,
+    )
+    monkeypatch.setattr(
+        "codebase_rag.services.graph_service.execute_read_query",
+        fake_execute_read_query,
     )
 
     context = GraphCodeMCPContext(str(tmp_path), batch_size=25)

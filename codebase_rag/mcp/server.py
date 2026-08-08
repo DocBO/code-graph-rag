@@ -62,7 +62,11 @@ def _build_tool_schema(name: str) -> dict[str, Any]:
                     "question": {
                         "type": "string",
                         "description": "Natural language question to transform into a Cypher query.",
-                    }
+                    },
+                    "repo_path": {
+                        "type": "string",
+                        "description": "Optional repository path override. Defaults to the server's configured repository.",
+                    },
                 },
                 "required": ["question"],
                 "additionalProperties": False,
@@ -82,6 +86,10 @@ def _build_tool_schema(name: str) -> dict[str, Any]:
                     "reference_document": {
                         "type": "string",
                         "description": "Optional path to a reference document for best practices.",
+                    },
+                    "repo_path": {
+                        "type": "string",
+                        "description": "Optional repository path override. Defaults to the server's configured repository.",
                     },
                 },
                 "required": ["language"],
@@ -111,7 +119,11 @@ def _build_tool_schema(name: str) -> dict[str, Any]:
                     "question": {
                         "type": "string",
                         "description": "Natural language question about the codebase.",
-                    }
+                    },
+                    "repo_path": {
+                        "type": "string",
+                        "description": "Optional repository path override. Defaults to the server's configured repository.",
+                    },
                 },
                 "required": ["question"],
                 "additionalProperties": False,
@@ -129,6 +141,10 @@ def _build_tool_schema(name: str) -> dict[str, Any]:
                         "minimum": 1,
                         "maximum": 50,
                         "description": "Maximum number of semantic matches to return (default: 5).",
+                    },
+                    "repo_path": {
+                        "type": "string",
+                        "description": "Optional repository path override. Defaults to the server's configured repository.",
                     },
                 },
                 "required": ["search_phrase"],
@@ -167,16 +183,31 @@ class GraphCodeMCPContext:
             return override
         return self.batch_size
 
-    async def run_query(self, question: str) -> dict[str, Any]:
+    async def run_query(
+        self, question: str, repo_path: str | None = None
+    ) -> dict[str, Any]:
         """Translate NL question into Cypher and fetch results."""
 
         if not question.strip():
             raise ValueError("question must not be empty")
 
+        target_repo = self._resolve_repo(repo_path)
         generator = self._ensure_cypher_generator()
         cypher_query = await generator.generate(question)
 
         def _task() -> list[dict[str, Any]]:
+            if target_repo != self.default_repo:
+                from ..services.graph_service import execute_read_query
+
+                return cast(
+                    list[dict[str, Any]],
+                    execute_read_query(
+                        host=settings.MEMGRAPH_HOST,
+                        port=settings.MEMGRAPH_PORT,
+                        query=cypher_query,
+                        params={"repo_path": str(target_repo)},
+                    ),
+                )
             with MemgraphIngestor(
                 host=settings.MEMGRAPH_HOST,
                 port=settings.MEMGRAPH_PORT,
@@ -187,7 +218,7 @@ class GraphCodeMCPContext:
 
         rows = await anyio.to_thread.run_sync(_task)
         return {
-            "repo_path": str(self.default_repo),
+            "repo_path": str(target_repo),
             "question": question,
             "cypher": cypher_query,
             "results": rows,
@@ -198,12 +229,14 @@ class GraphCodeMCPContext:
         language: str,
         instruction: str | None = None,
         reference_document: str | None = None,
+        repo_path: str | None = None,
     ) -> dict[str, Any]:
         """Run a single optimization prompt through the RAG orchestrator."""
 
         if not language.strip():
             raise ValueError("language must not be empty")
 
+        target_repo = self._resolve_repo(repo_path)
         prompt = instruction or self._default_optimization_prompt(
             language, reference_document
         )
@@ -212,13 +245,13 @@ class GraphCodeMCPContext:
             host=settings.MEMGRAPH_HOST,
             port=settings.MEMGRAPH_PORT,
             batch_size=self.batch_size,
-            repo_path=self.default_repo,
+            repo_path=target_repo,
         ) as ingestor:
-            rag_agent = initialize_services_and_agent(str(self.default_repo), ingestor)
+            rag_agent = initialize_services_and_agent(str(target_repo), ingestor)
             response = await rag_agent.run(prompt)
 
         return {
-            "repo_path": str(self.default_repo),
+            "repo_path": str(target_repo),
             "language": language,
             "response": response.output,
         }
@@ -257,23 +290,26 @@ class GraphCodeMCPContext:
             "metadata_path": str(metadata_path),
         }
 
-    async def query_codebase(self, question: str) -> dict[str, Any]:
+    async def query_codebase(
+        self, question: str, repo_path: str | None = None
+    ) -> dict[str, Any]:
         """Query the codebase using the standard agent search/answer flow."""
 
         if not question.strip():
             raise ValueError("question must not be empty")
 
+        target_repo = self._resolve_repo(repo_path)
         with MemgraphIngestor(
             host=settings.MEMGRAPH_HOST,
             port=settings.MEMGRAPH_PORT,
             batch_size=self.batch_size,
-            repo_path=self.default_repo,
+            repo_path=target_repo,
         ) as ingestor:
-            rag_agent = initialize_services_and_agent(str(self.default_repo), ingestor)
+            rag_agent = initialize_services_and_agent(str(target_repo), ingestor)
             response = await rag_agent.run(question)
 
         return {
-            "repo_path": str(self.default_repo),
+            "repo_path": str(target_repo),
             "question": question,
             "response": response.output,
         }
@@ -282,6 +318,7 @@ class GraphCodeMCPContext:
         self,
         search_phrase: str,
         top_n: int = 5,
+        repo_path: str | None = None,
     ) -> dict[str, Any]:
         """Return semantic-only snippet matches without agentic reasoning."""
 
@@ -292,70 +329,71 @@ class GraphCodeMCPContext:
             safe_top_n = max(1, min(int(top_n), 50))
         except (TypeError, ValueError) as exc:
             raise ValueError("top_n must be an integer") from exc
-        repo_path = str(self.default_repo)
+        target_repo = self._resolve_repo(repo_path)
+        repo_path_str = str(target_repo)
         semantic_matches = await semantic_code_search_async(
             search_phrase,
             safe_top_n,
-            repo_path=repo_path,
+            repo_path=repo_path_str,
         )
 
-        with MemgraphIngestor(
-            host=settings.MEMGRAPH_HOST,
-            port=settings.MEMGRAPH_PORT,
-            batch_size=self.batch_size,
-            repo_path=self.default_repo,
-        ) as ingestor:
-            formatted_matches: list[dict[str, Any]] = []
-            for match in semantic_matches:
-                node_id = match.get("node_id")
-                if node_id is None:
-                    continue
+        formatted_matches: list[dict[str, Any]] = []
+        for match in semantic_matches:
+            node_id = match.get("node_id")
+            if node_id is None:
+                continue
 
-                location_rows = cast(
-                    list[dict[str, Any]],
-                    ingestor.fetch_all(
-                        """
-                        MATCH (m:Module)-[:DEFINES|CONTAINS*..5]->(n)
-                        WHERE id(n) = $node_id AND n._repo_path = $repo_path
-                        RETURN m.path AS filename,
-                               n.start_line AS start_line,
-                               n.end_line AS end_line
-                        LIMIT 1
-                        """,
-                        {"node_id": node_id, "repo_path": repo_path},
-                    ),
+            from ..services.graph_service import execute_read_query
+
+            location_rows = cast(
+                list[dict[str, Any]],
+                execute_read_query(
+                    host=settings.MEMGRAPH_HOST,
+                    port=settings.MEMGRAPH_PORT,
+                    query="""
+                    MATCH (m:Module)-[:DEFINES|CONTAINS*..5]->(n)
+                    WHERE id(n) = $node_id AND n._repo_path = $repo_path
+                    RETURN m.path AS filename,
+                           n.start_line AS start_line,
+                           n.end_line AS end_line
+                    LIMIT 1
+                    """,
+                    params={"node_id": node_id, "repo_path": repo_path_str},
+                ),
+            )
+
+            location = location_rows[0] if location_rows else {}
+            snippet = match.get("chunk_text")
+            if not snippet:
+                source_code = get_function_source_code(
+                    int(node_id), repo_path=repo_path_str
                 )
+                if source_code:
+                    document = (
+                        f"Entity: {match.get('qualified_name') or f'node:{node_id}'}\n"
+                        f"Type: {match.get('type') or 'Code'}\n"
+                        f"File: {location.get('filename') or 'unknown'}\n\n"
+                        f"{source_code}"
+                    )
+                    chunk_index = self._chunk_index_from_match(
+                        match.get("matched_chunk_qualified_name")
+                    )
+                    snippet = self._slice_chunk(document, chunk_index)
 
-                location = location_rows[0] if location_rows else {}
-                snippet = match.get("chunk_text")
-                if not snippet:
-                    source_code = get_function_source_code(int(node_id), repo_path=repo_path)
-                    if source_code:
-                        document = (
-                            f"Entity: {match.get('qualified_name') or f'node:{node_id}'}\n"
-                            f"Type: {match.get('type') or 'Code'}\n"
-                            f"File: {location.get('filename') or 'unknown'}\n\n"
-                            f"{source_code}"
-                        )
-                        chunk_index = self._chunk_index_from_match(
-                            match.get("matched_chunk_qualified_name")
-                        )
-                        snippet = self._slice_chunk(document, chunk_index)
-
-                formatted_matches.append(
-                    {
-                        "qualified_name": match.get("qualified_name"),
-                        "type": match.get("type"),
-                        "score": match.get("score"),
-                        "filename": location.get("filename"),
-                        "start_line": location.get("start_line"),
-                        "end_line": location.get("end_line"),
-                        "snippet": snippet,
-                    }
-                )
+            formatted_matches.append(
+                {
+                    "qualified_name": match.get("qualified_name"),
+                    "type": match.get("type"),
+                    "score": match.get("score"),
+                    "filename": location.get("filename"),
+                    "start_line": location.get("start_line"),
+                    "end_line": location.get("end_line"),
+                    "snippet": snippet,
+                }
+            )
 
         return {
-            "repo_path": str(self.default_repo),
+            "repo_path": repo_path_str,
             "search_phrase": search_phrase,
             "top_n": safe_top_n,
             "matches": formatted_matches,
@@ -583,7 +621,9 @@ class GraphCodeMCPServer:
         try:
             if tool_name == "graph_query":
                 question = args.get("question", "")
-                result = await self.context.run_query(question)
+                result = await self.context.run_query(
+                    question, repo_path=args.get("repo_path")
+                )
                 summary = f"Executed Cypher query: {result['cypher']}"
                 return self._format_response(result, summary)
             if tool_name == "optimize_code":
@@ -591,6 +631,7 @@ class GraphCodeMCPServer:
                     language=args.get("language", ""),
                     instruction=args.get("instruction"),
                     reference_document=args.get("reference_document"),
+                    repo_path=args.get("repo_path"),
                 )
                 return self._format_response(result, result["response"])
             if tool_name == "get_status":
@@ -622,7 +663,8 @@ class GraphCodeMCPServer:
 
             if tool_name == "query_codebase":
                 result = await self.context.query_codebase(
-                    question=args.get("question", "")
+                    question=args.get("question", ""),
+                    repo_path=args.get("repo_path"),
                 )
                 return self._format_response(result, result["response"])
 
@@ -630,6 +672,7 @@ class GraphCodeMCPServer:
                 result = await self.context.quick_semantic_retrieval(
                     search_phrase=args.get("search_phrase", ""),
                     top_n=args.get("top_n", 5),
+                    repo_path=args.get("repo_path"),
                 )
                 return self._format_response(
                     result,

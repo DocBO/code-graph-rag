@@ -453,8 +453,8 @@ uv run python -m codebase_rag.main mcp \
 ```
 
 The server shares the same provider configuration as the CLI (`.env`, `--orchestrator`, `--cypher`) and offers four tools:
-- `query_codebase`: Answer natural-language questions using the standard agent search and answer flow.
-- `quick_semantic_retrieval`: Fast semantic-only retrieval of matched semantic chunks (not full symbol bodies) with filenames and line metadata (`search_phrase`, `top_n`).
+- `query_codebase`: Answer natural-language questions using the standard agent search and answer flow (`question`, optional `repo_path`).
+- `quick_semantic_retrieval`: Fast semantic-only retrieval of matched semantic chunks (not full symbol bodies) with filenames and line metadata (`search_phrase`, `top_n`, optional `repo_path`).
 - `get_status`: Report repo path, Memgraph host/port, and the active model providers.
 - `ingest_status`: Report the last ingest timestamp and how many files have changed since then.
 

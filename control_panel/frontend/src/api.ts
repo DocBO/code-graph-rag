@@ -61,6 +61,19 @@ export function mcpLogs(limit = 250): Promise<string[]> {
   return req(`/mcp/logs?limit=${limit}`)
 }
 
+export interface QueryResult {
+  repo_path: string
+  question: string
+  response: string
+}
+
+export function runQuery(repoPath: string, question: string): Promise<QueryResult> {
+  return req('/query', {
+    method: 'POST',
+    body: JSON.stringify({ repo_path: repoPath, question }),
+  })
+}
+
 function encodeRepoPath(path: string): string {
   return encodeURIComponent(path)
 }

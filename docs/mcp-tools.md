@@ -13,6 +13,7 @@ All tool responses include `repo_path` so clients can always see which repositor
 **Parameters:**
 - `search_phrase` (string, required): Semantic phrase to search for.
 - `top_n` (integer, optional): Max number of matches (default: 5, min: 1, max: 50).
+- `repo_path` (string, optional): Repository path override. Defaults to the server's configured repository.
 
 **Returns:**
 - `repo_path`, `search_phrase`, `top_n`, `matches[]`
@@ -27,6 +28,7 @@ All tool responses include `repo_path` so clients can always see which repositor
 
 **Parameters:**
 - `question` (string, required): Question about codebase functionality/implementation.
+- `repo_path` (string, optional): Repository path override. Defaults to the server's configured repository.
 
 **Returns:**
 - `repo_path`, `question`, `response` (string: synthesized answer)

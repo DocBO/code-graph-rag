@@ -58,6 +58,10 @@ The dashboard polls `/api/status` every 2.5 s and shows:
   watcher log lines)
 - last-update time and duration, per-repo log tails, and MCP server state
 
+A **Query Codebase (RAG)** card runs `query_codebase` against a selected repo:
+pick the repo, type a question, and the agent's markdown answer is rendered in
+place with a **Copy** button.
+
 ## API
 
 | Method | Path                              | Description                          |
@@ -72,6 +76,7 @@ The dashboard polls `/api/status` every 2.5 s and shows:
 | POST   | `/api/mcp/start`                  | Start the unified MCP server         |
 | POST   | `/api/mcp/stop`                   | Stop the MCP server                  |
 | GET    | `/api/mcp/logs`                   | MCP server log tail                  |
+| POST   | `/api/query`                      | Run `query_codebase` RAG on a repo   |
 
 `{path}` is the URL-encoded absolute repo path.
 

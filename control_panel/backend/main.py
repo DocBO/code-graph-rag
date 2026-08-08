@@ -14,6 +14,7 @@ import re
 import shlex
 import signal
 import subprocess
+import sys
 import threading
 import time
 from collections import deque
@@ -28,6 +29,11 @@ from pydantic import BaseModel, Field
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 DATA_DIR = Path(__file__).resolve().parent / "data"
 REPOS_FILE = DATA_DIR / "repos.json"
+
+# Make the Graph-Code package importable from this backend (it lives in the
+# project root, not in control_panel/backend where uvicorn runs).
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 MEMGRAPH_HOST = os.environ.get("MEMGRAPH_HOST", "localhost")
 MEMGRAPH_PORT = int(os.environ.get("MEMGRAPH_PORT", "7687"))
@@ -80,6 +86,11 @@ class StartWatcherRequest(BaseModel):
 
 class McpStartRequest(BaseModel):
     repo_path: str | None = None
+
+
+class QueryRequest(BaseModel):
+    repo_path: str
+    question: str
 
 
 # --------------------------------------------------------------------------
@@ -268,7 +279,7 @@ def _live_mcp_pids() -> list[int]:
     """Return all pids running the graph-code MCP server."""
     try:
         out = subprocess.run(
-            ["pgrep", "-f", "codebase_rag.main mcp"],
+            ["pgrep", "-f", "codebase_rag.main"],
             capture_output=True,
             text=True,
         )
@@ -285,7 +296,9 @@ def _live_mcp_pids() -> list[int]:
         except OSError:
             continue
         args = [a.decode(errors="replace") for a in cmdline if a]
-        if any("codebase_rag.main" in a and "mcp" in a for a in args):
+        has_module = any("codebase_rag.main" in a for a in args)
+        has_mcp = any(a in ("mcp", "-m") or "mcp" in a for a in args)
+        if has_module and has_mcp:
             pids.append(pid)
     return pids
 
@@ -714,16 +727,24 @@ def mcp_start(req: McpStartRequest) -> dict[str, Any]:
     mcp = manager.mcp
     if mcp.proc and mcp.proc.poll() is None:
         raise HTTPException(409, "MCP server already running")
-    # Adopt an MCP server left over from a previous backend process instead of
-    # trying to start a second one on the same port. Stop stale duplicates.
+    # Reconcile with any live MCP server instead of trying to start a second
+    # one on the same port: adopt the newest group (or keep the already-adopted
+    # one) and stop stale duplicates. Applies even when the handle still holds
+    # an adopted_pid from a previous run or reload.
     mcp_groups = _group_leaders(_live_mcp_pids())
-    if mcp_groups and mcp.adopted_pid is None:
-        for stale in mcp_groups[:-1]:
-            _stop_group_id(stale)
-        mcp.adopted_pid = mcp_groups[-1]
+    if mcp_groups:
+        keep = (
+            mcp.adopted_pid
+            if mcp.adopted_pid is not None and mcp.adopted_pid in mcp_groups
+            else mcp_groups[-1]
+        )
+        for stale in mcp_groups:
+            if stale != keep:
+                _stop_group_id(stale)
+        mcp.adopted_pid = keep
         mcp.state = "running"
         mcp.logs.append(
-            f"[mcp] adopted existing MCP server (pgid={mcp_groups[-1]}, "
+            f"[mcp] adopted existing MCP server (pgid={keep}, "
             f"stopped {len(mcp_groups) - 1} stale duplicate(s))"
         )
         return mcp.status()
@@ -800,6 +821,37 @@ def mcp_stop() -> dict[str, Any]:
 @app.get("/api/mcp/logs")
 def mcp_logs(limit: int = 200) -> list[str]:
     return list(manager.mcp.logs)[-limit:]
+
+
+# -- RAG query (query_codebase) -----------------------------------------------
+
+
+@app.post("/api/query")
+def run_query(req: QueryRequest) -> dict[str, Any]:
+    """Run the RAG query_codebase flow against a registered repo.
+
+    Returns the agent's markdown answer plus the repo path that produced it.
+    """
+    manager.get_repo(req.repo_path)
+    try:
+        import asyncio
+
+        from codebase_rag.mcp.server import GraphCodeMCPContext
+
+        context = GraphCodeMCPContext(
+            repo_path=str(Path(req.repo_path).expanduser().resolve()),
+            batch_size=DEFAULT_BATCH_SIZE,
+        )
+        result = asyncio.run(context.query_codebase(question=req.question))
+        return {
+            "repo_path": result.get("repo_path", req.repo_path),
+            "question": req.question,
+            "response": result.get("response", ""),
+        }
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(500, f"Query failed: {exc}") from exc
 
 
 if __name__ == "__main__":

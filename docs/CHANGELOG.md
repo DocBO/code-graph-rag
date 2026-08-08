@@ -2,6 +2,25 @@
 
 ## 2026-08-08
 
+### Markdown Renderer Fix: Overlapping List Markers ✅
+- **Fixed overlapping `<ol>` markers** — `renderListItem` already emits a `<li>`, but `renderBlocks` wrapped it in a second `<li>`, producing nested `<li>` (invalid HTML). Browsers then drew duplicate markers at the same position (e.g. "1" overlapping "2"). List items are now wrapped in `Fragment` instead.
+- **Verified** — `tsc && vite build` clean; rendered list HTML has flat `<li>` elements with correct sequential numbers.
+
+### Markdown Renderer Fix: Bullet Undefined Crash ✅
+- **Fixed runtime crash** — `UL_RE` had only one capture group, so `parseList` read `m[2]` as `undefined` for bullet items and `renderInline` crashed with `Cannot read properties of undefined (reading 'length')`. Both `UL_RE` and `OL_RE` now capture marker + content as two groups.
+- **Verified** — bullets, nested bullet continuations, and numbered lists all parse with defined content; `tsc && vite build` clean.
+
+### Markdown Renderer Fix: Ordered Lists ✅
+- **Fixed ordered-list rendering** — consecutive numbered items (with indented continuation lines and nested bullets) are now grouped into a single `<ol>` with the correct `start` number, instead of each item becoming its own list that renumbered everything to `1.`.
+- **Robust list parsing** — `parseList` consumes indented continuation lines (even after blank lines) into the owning item, keeps nested `-`/`*` bullets, and stops at headings/code fences; trailing paragraphs after a list are no longer absorbed.
+- **Verified** — parser unit-tested against the "How moved files are handled" example: items 1-3 render as one list with correct numbers, nested bullets preserved, trailing paragraph separate.
+
+### Control Panel: RAG Query Card ✅
+- **Added Query Codebase (RAG) card to the dashboard** — separate card with a repo selector, question textarea, and *Run query* button; results are rendered as markdown (headings, lists, inline code, code fences, links) with a **Copy** button.
+- **Backend `/api/query` endpoint** — runs the `query_codebase` RAG flow (`GraphCodeMCPContext.query_codebase`) against a registered repo and returns the agent's markdown answer; backend now adds the project root to `sys.path` so `codebase_rag` is importable from `control_panel/backend`.
+- **Lightweight dependency-free markdown renderer** (`Markdown.tsx`) — headings, paragraphs, ul/ol, inline `code`/`**bold**`/`*italic*`/links, and fenced code blocks with language label.
+- **Verified** — frontend `tsc && vite build` clean; `/api/query` returns markdown answers for the elysia repo (via direct API and through the Vite proxy).
+
 ### MCP Tool: `get_watched_repos` ✅
 - **Added `get_watched_repos` MCP tool** — returns which repositories are registered with the control panel and whether each has an active real-time watcher running, so agents can quickly check if their repo is being watched or is stopped.
 - **Primary source: control panel** — queries `GET {CONTROL_PANEL_URL}/api/status` (new `CONTROL_PANEL_URL` setting, default `http://127.0.0.1:8008`) and returns per-repo `watcher_state`, `watcher_pid`, `update_in_progress`, `last_update_at`, plus `watched_paths`.

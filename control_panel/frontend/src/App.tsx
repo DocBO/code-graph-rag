@@ -8,10 +8,12 @@ import {
   mcpStop,
   removeRepo,
   repoLogs,
+  runQuery,
   startWatcher,
   stopWatcher,
 } from './api'
 import type { RepoInfo, StatusResponse } from './types'
+import Markdown from './Markdown'
 
 type LampTone = 'off' | 'ok' | 'busy' | 'err'
 
@@ -170,6 +172,122 @@ function RepoCard({
         </pre>
       )}
     </article>
+  )
+}
+
+function QueryPanel({
+  repos,
+  defaultRepo,
+}: {
+  repos: RepoInfo[]
+  defaultRepo: string
+}) {
+  const [repoPath, setRepoPath] = useState(defaultRepo)
+  const [question, setQuestion] = useState('')
+  const [result, setResult] = useState<string | null>(null)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [copied, setCopied] = useState(false)
+
+  useEffect(() => {
+    if (repos.length > 0 && !repos.some((r) => r.path === repoPath)) {
+      setRepoPath(repos[0].path)
+    }
+  }, [repos, repoPath])
+
+  const submit = async () => {
+    if (!repoPath || !question.trim()) return
+    setBusy(true)
+    setError(null)
+    setResult(null)
+    try {
+      const res = await runQuery(repoPath, question.trim())
+      setResult(res.response)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const copy = async () => {
+    if (!result) return
+    try {
+      await navigator.clipboard.writeText(result)
+      setCopied(true)
+      setTimeout(() => setCopied(false), 2000)
+    } catch {
+      setCopied(false)
+    }
+  }
+
+  return (
+    <section className="card query-card">
+      <header className="card-head">
+        <div className="card-ident">
+          <span className="query-glyph" aria-hidden>
+            ◈
+          </span>
+          <div className="card-title">
+            <h3>Query Codebase (RAG)</h3>
+            <code className="card-path">ask the knowledge graph anything</code>
+          </div>
+        </div>
+        <span className={`badge badge-${busy ? 'updating' : 'stopped'}`}>
+          {busy ? 'THINKING…' : 'READY'}
+        </span>
+      </header>
+
+      <div className="query-form">
+        <select
+          className="input mcp-select"
+          value={repoPath}
+          onChange={(e) => setRepoPath(e.target.value)}
+          disabled={busy}
+        >
+          {repos.length === 0 && <option value="">no repos registered</option>}
+          {repos.map((r) => (
+            <option key={r.path} value={r.path}>
+              {r.name} — {r.path}
+            </option>
+          ))}
+        </select>
+        <textarea
+          className="input query-input"
+          rows={3}
+          placeholder="e.g. How does the watcher handle moved files?"
+          value={question}
+          onChange={(e) => setQuestion(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) submit()
+          }}
+          disabled={busy}
+        />
+        <button
+          className="btn btn-start query-submit"
+          onClick={submit}
+          disabled={busy || !repoPath || !question.trim()}
+        >
+          {busy ? 'Querying…' : 'Run query'}
+        </button>
+      </div>
+
+      {error && <div className="card-error">{error}</div>}
+
+      {result && (
+        <div className="query-result">
+          <div className="query-result-head">
+            <span className="meta-k">RESULT — {repoPath}</span>
+            <button className="btn btn-ghost" onClick={copy}>
+              {copied ? '✓ Copied' : 'Copy'}
+            </button>
+          </div>
+          <div className="query-result-body">
+            <Markdown text={result} />
+          </div>
+        </div>
+      )}
+    </section>
   )
 }
 
@@ -448,6 +566,8 @@ export default function App() {
           onStop={() => withLoading('mcp', () => mcpStop())}
           onLogs={toggleMcpLogs}
         />
+
+        <QueryPanel repos={repos} defaultRepo={repos[0]?.path ?? ''} />
 
         <AddRepoForm onAdd={refresh} />
 

@@ -186,6 +186,18 @@ def test_mcp_server_lists_tools_and_invokes_them() -> None:
                     "response",
                 }
 
+                quick_semantic_tool = next(
+                    tool
+                    for tool in tools_result.tools
+                    if tool.name == "quick_semantic_retrieval"
+                )
+                assert quick_semantic_tool.inputSchema["required"] == ["search_phrase"]
+                assert set(quick_semantic_tool.inputSchema["properties"]) == {
+                    "search_phrase",
+                    "top_n",
+                    "repo_path",
+                }
+
                 query_result = await session.call_tool(
                     "graph_query", {"question": "List modules"}
                 )
@@ -243,6 +255,20 @@ def test_mcp_server_lists_tools_and_invokes_them() -> None:
                     == "src/auth.py"
                 )
 
+                quick_semantic_with_repo_result = await session.call_tool(
+                    "quick_semantic_retrieval",
+                    {
+                        "search_phrase": "login handler",
+                        "top_n": 2,
+                        "repo_path": "/workspace/alt",
+                    },
+                )
+                assert not quick_semantic_with_repo_result.isError
+                assert (
+                    quick_semantic_with_repo_result.structuredContent["repo_path"]
+                    == "/workspace/alt"
+                )
+
             tg.cancel_scope.cancel()
 
     anyio.run(_run, backend="asyncio")
@@ -256,6 +282,14 @@ def test_mcp_server_lists_tools_and_invokes_them() -> None:
     assert (
         "quick_semantic_retrieval",
         {"search_phrase": "login handler", "top_n": 3, "repo_path": None},
+    ) in context.calls
+    assert (
+        "quick_semantic_retrieval",
+        {
+            "search_phrase": "login handler",
+            "top_n": 2,
+            "repo_path": "/workspace/alt",
+        },
     ) in context.calls
 
 

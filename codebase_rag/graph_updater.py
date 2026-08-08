@@ -521,10 +521,6 @@ class GraphUpdater:
 
             relative_parts = path.relative_to(self.repo_path).parts
 
-            # Skip if any part of the path starts with a dot (hidden files/folders)
-            if any(part.startswith(".") for part in relative_parts):
-                return True
-
             return any(part in self.ignore_dirs for part in relative_parts)
 
         # Use pathlib.rglob for more efficient file iteration

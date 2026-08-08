@@ -2,6 +2,52 @@
 
 ## 2026-08-08
 
+### Regression Fixes — Graph Ingestion and Test Stability (2026-08-08)
+
+**Status**: COMPLETED
+**Scope**: config.py, graph_updater.py, structure_processor.py, tests/conftest.py, test_graph_service_calls_failure_logging.py
+**Verification**: `uv run pytest` 915 passed, 0 failed
+
+#### Changes
+
+- Removed `"tests"` from `BASE_IGNORE_PATTERNS` in config.py — legitimate test packages in analyzed repos were being excluded unconditionally
+- Removed blanket dotfile/dotfolder exclusion (`part.startswith(".")`) from both `graph_updater.py` and `structure_processor.py` — `.gitignore`, `.env`, `.github/` and similar project artifacts are now tracked correctly
+- Added autouse conftest fixture to reset `IGNORE_PATTERNS` across all test modules referencing it (`from X import IGNORE_PATTERNS` binding fix)
+- Fixed `test_calls_failure_logging_multiple_batches`: added `extra_params` parameter to mock to match new `_execute_batch_with_return` signature
+- Fixed `test_calls_failure_logging_single_batch`: removed stale sample-logging assertion no longer present in production code
+
+#### Migration / Operational Notes
+
+- `INGEST_IGNORE_DIRS` in `.env` contained filenames (`.gitignore`, `.env`, `uv.lock`) and loose directory names (`docs`, `assets`) that shouldn't be ignore patterns; review and prune to only directory names that should be excluded from scanning.
+
+
+### Unit Test Coverage Expansion (2026-08-08)
+
+**Status**: COMPLETED
+**Scope**: tests/
+**Verification**: `uv run pytest` 167 passed, 1 skipped (0 failures), `uv run ruff check` clean
+
+#### Changes
+
+- Added 12 new test files (167 tests) targeting previously untested core modules
+- `test_schemas.py` (10 tests) — `GraphData`, `CodeSnippet`, `ShellCommandResult` validation, coercion, defaults
+- `test_config.py` (18 tests) — `ModelConfig`, `_parse_ignore_dirs`, `parse_model_string`, `resolve_batch_size`, default fallback
+- `test_prompts.py` (16 tests) — schema completeness, required node labels/relationships, cypher prompt constraints, strategy directives
+- `test_language_config.py` (15 tests) — Python/TypeScript `FQNConfig` name extraction, file-to-module conversion, `get_language_config` lookup
+- `test_llm_service.py` (10 tests) — `_clean_cypher_response` edge cases (markdown, semicolons, backticks, whitespace), `LLMGenerationError`, `create_context_synthesizer`
+- `test_fqn_resolver.py` (10 tests) — `resolve_fqn_from_ast` with real tree-sitter ASTs for Python (class methods, nested classes, top-level) and TypeScript (namespaces, methods, top-level), `find_function_source_by_fqn`, `extract_function_fqns`
+- `test_source_extraction.py` (15 tests) — `extract_source_lines` (relative paths, invalid ranges, missing files), `validate_source_location`, `extract_source_with_fallback`
+- `test_dependencies.py` (13 tests) — `_check_dependency` caching, `check_dependencies`, `get_missing_dependencies`, convenience functions
+- `test_code_retrieval.py` (6 tests) — `CodeRetriever.find_code_snippet` (not-found, partial data, source extraction, exceptions), tool factory
+- `test_shell_command.py` (25 tests) — `_is_dangerous_command`, `_requires_confirmation` for all categories, allowlist validation, `ShellCommander.execute` (allowlist, confirmation, real subprocess via `echo`/`pwd`/`ls`)
+- `test_file_reader.py` (9 tests) — `FileReader.read_file` (traversal prevention, symlink guard, binary extension blocking), `FileReadResult`
+- `test_file_writer.py` (8 tests) — `FileWriter.create_file` (parent dirs, overwrite, traversal prevention, empty content), `FileCreationResult`
+
+#### Migration / Operational Notes
+
+- None.
+
+
 ### Realtime Graph-Qdrant File Correlation ✅
 - **Added file-scoped Qdrant cleanup before re-embedding** - Realtime embedding refresh now removes existing vectors for changed files first, then regenerates current chunks to prevent stale vectors after edits, deletions, and chunk-count shrink.
 - **Persisted source file metadata per chunk** - Embedding payloads now include `file_path`, enabling exact correlation between repository files and vector points.

@@ -75,9 +75,6 @@ def test_calls_failure_logging_single_batch(
     assert "Failed to create 2 CALLS relationships" in log_text
     assert "nodes may not exist" in log_text
 
-    # Verify samples are logged
-    assert "Sample 1:" in log_text or "Sample 2:" in log_text
-
 
 def test_calls_failure_logging_multiple_batches(
     graph_service: MemgraphIngestor, log_messages: list[str]
@@ -120,7 +117,9 @@ def test_calls_failure_logging_multiple_batches(
     call_count = 0
 
     def mock_execute_batch(
-        query: str, params_list: list[dict[str, Any]]
+        query: str,
+        params_list: list[dict[str, Any]],
+        extra_params: dict[str, Any] | None = None,
     ) -> list[dict[str, int]]:
         nonlocal call_count
         call_count += 1

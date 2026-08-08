@@ -158,9 +158,7 @@ def test_mcp_server_lists_tools_and_invokes_them() -> None:
                 }.issubset(tool_names)
 
                 query_codebase_tool = next(
-                    tool
-                    for tool in tools_result.tools
-                    if tool.name == "query_codebase"
+                    tool for tool in tools_result.tools if tool.name == "query_codebase"
                 )
                 assert query_codebase_tool.inputSchema["required"] == ["question"]
                 assert set(query_codebase_tool.inputSchema["properties"]) == {
@@ -216,10 +214,18 @@ def test_mcp_server_lists_tools_and_invokes_them() -> None:
                     },
                 )
                 assert not quick_semantic_result.isError
-                assert quick_semantic_result.structuredContent["search_phrase"] == "login handler"
+                assert (
+                    quick_semantic_result.structuredContent["search_phrase"]
+                    == "login handler"
+                )
                 assert quick_semantic_result.structuredContent["top_n"] == 3
-                assert quick_semantic_result.structuredContent["repo_path"] == "/workspace"
-                assert quick_semantic_result.structuredContent["matches"][0]["filename"] == "src/auth.py"
+                assert (
+                    quick_semantic_result.structuredContent["repo_path"] == "/workspace"
+                )
+                assert (
+                    quick_semantic_result.structuredContent["matches"][0]["filename"]
+                    == "src/auth.py"
+                )
 
             tg.cancel_scope.cancel()
 
@@ -262,16 +268,12 @@ async def test_mcp_context_query_uses_standard_agent(
 
             return Result()
 
-    def fake_initialize(
-        repo_path: str, ingestor: DummyIngestor
-    ) -> DummyAgent:
+    def fake_initialize(repo_path: str, ingestor: DummyIngestor) -> DummyAgent:
         captured["repo_path"] = repo_path
         captured["ingestor"] = ingestor
         return DummyAgent()
 
-    monkeypatch.setattr(
-        "codebase_rag.mcp.server.MemgraphIngestor", DummyIngestor
-    )
+    monkeypatch.setattr("codebase_rag.mcp.server.MemgraphIngestor", DummyIngestor)
     monkeypatch.setattr(
         "codebase_rag.mcp.server.initialize_services_and_agent",
         fake_initialize,
@@ -305,7 +307,9 @@ async def test_mcp_context_quick_semantic_retrieval(
         def __exit__(self, *args: object) -> None:
             return None
 
-        def fetch_all(self, query: str, params: dict[str, object]) -> list[dict[str, object]]:
+        def fetch_all(
+            self, query: str, params: dict[str, object]
+        ) -> list[dict[str, object]]:
             captured["location_query"] = query
             captured["location_params"] = params
             return [
@@ -340,9 +344,7 @@ async def test_mcp_context_quick_semantic_retrieval(
         captured["source_repo_path"] = repo_path
         return "def login(user): ..."
 
-    monkeypatch.setattr(
-        "codebase_rag.mcp.server.MemgraphIngestor", DummyIngestor
-    )
+    monkeypatch.setattr("codebase_rag.mcp.server.MemgraphIngestor", DummyIngestor)
     monkeypatch.setattr(
         "codebase_rag.mcp.server.semantic_code_search_async",
         fake_semantic_code_search_async,

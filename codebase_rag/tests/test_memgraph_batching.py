@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 from codebase_rag.services.graph_service import MemgraphIngestor
@@ -12,6 +13,9 @@ def _create_ingestor_with_mocked_connection(
     ingestor = MemgraphIngestor(host="localhost", port=7687, batch_size=batch_size)
     conn_mock = MagicMock()
     cursor_mock = MagicMock()
+    # Default to a non-returning query result so fetch loops terminate.
+    cursor_mock.description = None
+    cursor_mock.fetchone.return_value = None
     conn_mock.cursor.return_value = cursor_mock
     ingestor.conn = conn_mock
     return ingestor, cursor_mock
@@ -49,20 +53,29 @@ def test_node_batch_preserves_per_row_properties() -> None:
     assert "SET n += row.props" in executed_query
 
     batch_rows = cursor_mock.execute.call_args[0][1]["batch"]
+    expected_repo_path = ingestor.repo_path
     assert batch_rows == [
         {
             "id": "demo.fn1",
-            "props": {"name": "fn1", "decorators": ["@a"]},
+            "props": {
+                "name": "fn1",
+                "decorators": ["@a"],
+                "_repo_path": expected_repo_path,
+            },
         },
         {
             "id": "demo.fn2",
-            "props": {"name": "fn2"},
+            "props": {"name": "fn2", "_repo_path": expected_repo_path},
         },
     ]
 
 
 def test_relationship_batch_flushes_after_threshold_and_respects_node_flush() -> None:
     ingestor, cursor_mock = _create_ingestor_with_mocked_connection()
+    # Relationship flush uses _execute_batch_with_return() and needs a finite
+    # cursor stream to avoid infinite loops with MagicMock defaults.
+    cursor_mock.description = [SimpleNamespace(name="created")]
+    cursor_mock.fetchone.side_effect = [(2,), None]
 
     with patch.object(
         ingestor, "flush_nodes", wraps=ingestor.flush_nodes

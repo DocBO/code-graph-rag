@@ -15,6 +15,19 @@ from codebase_rag.parser_loader import load_parsers
 from codebase_rag.services.graph_service import MemgraphIngestor
 
 
+@pytest.fixture(autouse=True)
+def _reset_ignore_patterns() -> Generator[None, None, None]:
+    import codebase_rag.config as _cfg
+    import codebase_rag.graph_updater as _gu
+    import codebase_rag.parsers.structure_processor as _sp
+
+    clean = _cfg.BASE_IGNORE_PATTERNS.copy()
+    _gu.IGNORE_PATTERNS = clean
+    _sp.IGNORE_PATTERNS = clean
+    _cfg.IGNORE_PATTERNS = clean
+    yield
+
+
 @pytest.fixture
 def temp_repo() -> Generator[Path, None, None]:
     """Creates a temporary repository path for a test and cleans up afterward."""

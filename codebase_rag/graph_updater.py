@@ -11,6 +11,7 @@ from .config import IGNORE_PATTERNS, IGNORE_SUFFIXES, settings
 from .language_config import LANGUAGE_FQN_CONFIGS, get_language_config
 from .parsers.factory import ProcessorFactory
 from .services.graph_service import MemgraphIngestor
+from .utils.chunking import chunk_boundaries
 from .utils.dependencies import has_semantic_dependencies
 from .utils.fqn_resolver import find_function_source_by_fqn
 from .utils.source_extraction import extract_source_with_fallback
@@ -600,7 +601,19 @@ class GraphUpdater:
 
         try:
             from .embedder import embed_code_batch
-            from .vector_store import batch_store_embeddings
+            from .vector_store import batch_store_embeddings, clean_collection
+
+            # Pass 4 regenerates embeddings for every embeddable node in the
+            # repo, so purge the collection first. Otherwise points orphaned by
+            # renames, deleted nodes, or chunk-config changes linger forever and
+            # still surface in semantic search.
+            try:
+                clean_collection(self.repo_path)
+            except Exception as exc:
+                logger.warning(
+                    "  [Pass 4] Could not clean existing embeddings: {}",
+                    exc,
+                )
 
             # Symbols alone miss common frontend behavior stored in top-level JSX,
             # templates, and styles. Include parseable modules and frontend assets.
@@ -695,8 +708,8 @@ class GraphUpdater:
         if len(code) <= max_size:
             return [(code, node_id, qualified_name, source_path)]
         chunks: list[tuple[str, int, str, str | None]] = []
-        for i in range(0, len(code), max_size):
-            chunk_code = code[i : i + max_size]
+        for start, end in chunk_boundaries(len(code), max_size):
+            chunk_code = code[start:end]
             chunk_qn = f"{qualified_name}_chunk_{len(chunks)}"
             chunks.append((chunk_code, node_id, chunk_qn, source_path))
         return chunks

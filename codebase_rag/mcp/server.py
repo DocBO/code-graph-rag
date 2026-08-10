@@ -20,12 +20,14 @@ from starlette.responses import PlainTextResponse
 from starlette.routing import Mount
 
 from ..config import settings
-from ..ingest_metadata import summarize_ingest_status
+from ..graph_updater import GraphUpdater
+from ..ingest_metadata import summarize_ingest_status, write_ingest_metadata
 from ..parser_loader import load_parsers
 from ..runtime import initialize_services_and_agent
 from ..services.graph_service import MemgraphIngestor
 from ..services.llm import CypherGenerator
 from ..tools.semantic_search import get_function_source_code, semantic_code_search_async
+from ..utils.chunking import chunk_boundaries
 
 
 class TransportLoggingMiddleware:
@@ -157,6 +159,21 @@ def _build_tool_schema(name: str) -> dict[str, Any]:
             return {
                 "type": "object",
                 "properties": {},
+                "additionalProperties": False,
+            }
+        case "start_updater":
+            return {
+                "type": "object",
+                "properties": {
+                    "repo_path": {
+                        "type": "string",
+                        "description": "Optional repository path override. Defaults to the server's configured repository.",
+                    },
+                    "force": {
+                        "type": "boolean",
+                        "description": "Run a full graph update even when the index is not stale (default: false).",
+                    },
+                },
                 "additionalProperties": False,
             }
         case _:
@@ -294,6 +311,74 @@ class GraphCodeMCPContext:
         last_ingest, changes, metadata_path = summarize_ingest_status(target_repo)
         return {
             "repo_path": str(target_repo),
+            "last_ingest": last_ingest,
+            "changes": changes,
+            "metadata_path": str(metadata_path),
+        }
+
+    async def start_updater(
+        self, repo_path: str | None = None, force: bool = False
+    ) -> dict[str, Any]:
+        """Run a one-shot full graph update for a repo.
+
+        Skips the update (reporting ``started=False``) when the index is fresh
+        and ``force`` is false, so agents can safely call this after detecting
+        a stale index via ``ingest_status``.
+        """
+
+        target_repo = self._resolve_repo(repo_path)
+        last_ingest, changes, metadata_path = summarize_ingest_status(target_repo)
+        stale = changes.get("total", 0) > 0 or last_ingest is None
+
+        if not stale and not force:
+            return {
+                "repo_path": str(target_repo),
+                "started": False,
+                "reason": "index_fresh",
+                "last_ingest": last_ingest,
+                "changes": changes,
+                "metadata_path": str(metadata_path),
+            }
+
+        def _task() -> None:
+            with MemgraphIngestor(
+                host=settings.MEMGRAPH_HOST,
+                port=settings.MEMGRAPH_PORT,
+                batch_size=self.batch_size,
+                repo_path=target_repo,
+            ) as ingestor:
+                ingestor.ensure_constraints()
+                if force:
+                    # A forced refill rebuilds the whole index, so purge stale
+                    # embedding points from previous runs (e.g. different chunk
+                    # sizes or naming schemes) before regenerating them.
+                    from ..utils.dependencies import has_semantic_dependencies
+
+                    if has_semantic_dependencies():
+                        from ..vector_store import clean_collection
+
+                        try:
+                            clean_collection(target_repo)
+                            logger.info(
+                                "Cleaned Qdrant collection for forced refill: {}",
+                                target_repo,
+                            )
+                        except Exception as exc:
+                            logger.warning(
+                                "Failed to clean Qdrant collection for forced refill: {}",
+                                exc,
+                            )
+                parsers, queries = load_parsers()
+                updater = GraphUpdater(ingestor, target_repo, parsers, queries)
+                updater.run()
+                write_ingest_metadata(target_repo)
+
+        await anyio.to_thread.run_sync(_task)
+
+        return {
+            "repo_path": str(target_repo),
+            "started": True,
+            "reason": "stale" if stale else "forced",
             "last_ingest": last_ingest,
             "changes": changes,
             "metadata_path": str(metadata_path),
@@ -510,10 +595,13 @@ class GraphCodeMCPContext:
     def _slice_chunk(document: str, chunk_index: int) -> str:
         max_size = settings.EMBED_MAX_CHUNK_SIZE
         safe_index = max(0, chunk_index)
-        start = safe_index * max_size
-        if start >= len(document):
+        boundaries = chunk_boundaries(len(document), max_size)
+        if not boundaries:
+            return ""
+        if safe_index >= len(boundaries):
             return document[:max_size]
-        return document[start : start + max_size]
+        start, end = boundaries[safe_index]
+        return document[start:end]
 
     def _default_optimization_prompt(
         self, language: str, reference_document: str | None
@@ -722,6 +810,44 @@ class GraphCodeMCPServer:
                     "required": ["source", "control_panel", "repos", "watched_paths"],
                 },
             ),
+            types.Tool(
+                name="start_updater",
+                title="Start Updater",
+                description=(
+                    "Run a one-shot full graph update for a repo. Detects whether the "
+                    "index is stale from ingest metadata and skips the update when it is "
+                    "fresh unless 'force' is true. Use this after ingest_status reports "
+                    "pending file changes so the knowledge graph reflects the current code."
+                ),
+                inputSchema=_build_tool_schema("start_updater"),
+                outputSchema={
+                    "type": "object",
+                    "properties": {
+                        "repo_path": {"type": "string"},
+                        "started": {"type": "boolean"},
+                        "reason": {"type": "string"},
+                        "last_ingest": {"type": ["string", "null"]},
+                        "changes": {
+                            "type": "object",
+                            "properties": {
+                                "added": {"type": "integer"},
+                                "deleted": {"type": "integer"},
+                                "modified": {"type": "integer"},
+                                "total": {"type": "integer"},
+                            },
+                        },
+                        "metadata_path": {"type": "string"},
+                    },
+                    "required": [
+                        "repo_path",
+                        "started",
+                        "reason",
+                        "last_ingest",
+                        "changes",
+                        "metadata_path",
+                    ],
+                },
+            ),
         ]
 
     async def _list_tools(
@@ -803,6 +929,24 @@ class GraphCodeMCPServer:
                     if watched
                     else "No repositories are currently being watched."
                 )
+                return self._format_response(result, message)
+
+            if tool_name == "start_updater":
+                result = await self.context.start_updater(
+                    repo_path=args.get("repo_path"),
+                    force=bool(args.get("force", False)),
+                )
+                if result.get("started"):
+                    reason = result.get("reason")
+                    message = (
+                        f"Graph update started for {result['repo_path']} "
+                        f"({result['changes']['total']} pending change(s), reason={reason})."
+                    )
+                else:
+                    message = (
+                        f"Index is fresh for {result['repo_path']}; no update started. "
+                        f"Pending changes: {result['changes']['total']}."
+                    )
                 return self._format_response(result, message)
 
             raise ValueError(f"Unsupported tool: {tool_name}")

@@ -9,10 +9,12 @@ All endpoints are unauthenticated and intended for localhost only.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import shlex
 import signal
+import socket
 import subprocess
 import sys
 import threading
@@ -25,6 +27,8 @@ import uvicorn
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
+
+logger = logging.getLogger(__name__)
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 DATA_DIR = Path(__file__).resolve().parent / "data"
@@ -44,6 +48,11 @@ MCP_PATH = os.environ.get("MCP_PATH", "/mcp")
 DEFAULT_DEBOUNCE = 30
 DEFAULT_BATCH_SIZE = 2000
 LOG_LIMIT = 400
+# An MCP server that neither binds its port nor prints a startup line within
+# this many seconds is killed and marked "error" instead of leaving the
+# dashboard stuck on "starting". Watchers use no timeout because a full-scan
+# watcher legitimately stays "starting" for the whole initial ingestion.
+MCP_START_TIMEOUT = float(os.environ.get("MCP_START_TIMEOUT", "120"))
 
 app = FastAPI(title="Graph-Code RAG Control Panel")
 
@@ -91,6 +100,12 @@ class McpStartRequest(BaseModel):
 class QueryRequest(BaseModel):
     repo_path: str
     question: str
+
+
+class SemanticSearchRequest(BaseModel):
+    repo_path: str
+    search_phrase: str
+    top_n: int = 5
 
 
 # --------------------------------------------------------------------------
@@ -363,10 +378,34 @@ def _start_monitor(
     proc: subprocess.Popen[str],
     handle: WatcherHandle | McpHandle,
     on_exit: Any,
+    start_timeout: float = 0.0,
 ) -> threading.Thread:
-    """Spawn a daemon thread that watches a process and updates handle state on exit."""
+    """Spawn a daemon thread that watches a process and updates handle state on exit.
+
+    While the handle is in "starting" the thread polls for an early exit (the
+    process died before reaching "running", e.g. a spawn that never printed its
+    readiness line) and, when ``start_timeout`` > 0, escalates a hang to
+    "error" so the dashboard never stays stuck on "starting" forever.
+    """
 
     def _watch() -> None:
+        deadline = time.time() + start_timeout if start_timeout > 0 else float("inf")
+        while handle.state == "starting":
+            rc = proc.poll()
+            if rc is not None:
+                handle.proc = None
+                handle.state = "error"
+                handle.last_error = f"process exited with code {rc}"
+                on_exit(handle)
+                return
+            if time.time() > deadline:
+                handle.proc = None
+                handle.state = "error"
+                handle.last_error = f"startup timed out after {int(start_timeout)}s"
+                _stop_group(proc)
+                on_exit(handle)
+                return
+            time.sleep(0.5)
         proc.wait()
         handle.proc = None
         if handle.state == "stopping":
@@ -379,6 +418,85 @@ def _start_monitor(
     thread = threading.Thread(target=_watch, daemon=True)
     thread.start()
     return thread
+
+
+def _start_adopted_monitor(
+    pgid: int,
+    handle: WatcherHandle | McpHandle,
+    on_exit: Any = None,
+) -> threading.Thread:
+    """Spawn a daemon thread that watches an adopted (non-child) process group.
+
+    Adopted processes have no Popen handle, so liveness is polled via the
+    process group. An unexpected exit moves the handle to "error" (with a
+    readable message); a stop issued through the control panel leaves it
+    "stopped".
+    """
+
+    def _watch() -> None:
+        while True:
+            if handle.state != "running":
+                handle.adopted_pid = None
+                if handle.state == "stopping":
+                    handle.state = "stopped"
+                return
+            try:
+                os.killpg(pgid, 0)
+            except (ProcessLookupError, PermissionError):
+                handle.adopted_pid = None
+                if handle.state == "stopping":
+                    handle.state = "stopped"
+                else:
+                    handle.state = "error"
+                    handle.last_error = "adopted process exited unexpectedly"
+                    if on_exit:
+                        on_exit(handle)
+                return
+            time.sleep(1)
+
+    thread = threading.Thread(target=_watch, daemon=True)
+    thread.start()
+    return thread
+
+
+# --------------------------------------------------------------------------
+# Memgraph liveness probe
+# --------------------------------------------------------------------------
+
+
+_MEMGRAPH_PROBE_LOCK = threading.Lock()
+_MEMGRAPH_PROBE_CACHE: dict[str, Any] = {"at": 0.0, "alive": False, "error": None}
+
+
+def _probe_memgraph_liveness(
+    host: str | None = None,
+    port: int | None = None,
+    timeout: float = 2.0,
+) -> dict[str, Any]:
+    """Return a lightweight liveness probe result for the Memgraph Bolt port.
+
+    Uses a short TCP connect so the dashboard can show whether Memgraph is
+    actually reachable without pulling in the full Bolt driver or blocking the
+    status endpoint. Results are cached for a short interval to keep the
+    probe cheap while the UI polls every few seconds.
+    """
+    host = host or MEMGRAPH_HOST
+    port = port or MEMGRAPH_PORT
+    now = time.time()
+    with _MEMGRAPH_PROBE_LOCK:
+        if now - _MEMGRAPH_PROBE_CACHE["at"] < 2.0:
+            return dict(_MEMGRAPH_PROBE_CACHE)
+        try:
+            with socket.create_connection((host, port), timeout=timeout):
+                alive = True
+            error = None
+        except Exception as exc:  # noqa: BLE001 - surface any connection failure
+            alive = False
+            error = str(exc)
+        _MEMGRAPH_PROBE_CACHE.update(
+            {"at": time.time(), "alive": alive, "error": error}
+        )
+        return dict(_MEMGRAPH_PROBE_CACHE)
 
 
 # --------------------------------------------------------------------------
@@ -427,12 +545,15 @@ class RepoManager:
         if mcp_groups:
             for stale in mcp_groups[:-1]:
                 _stop_group_id(stale)
+            self.mcp.proc = None
+            self.mcp.last_error = None
             self.mcp.adopted_pid = mcp_groups[-1]
             self.mcp.state = "running"
             self.mcp.logs.append(
                 f"[mcp] adopted existing MCP server (pgid={mcp_groups[-1]}, "
                 f"stopped {len(mcp_groups) - 1} stale duplicate(s))"
             )
+            self.mcp._monitor = _start_adopted_monitor(mcp_groups[-1], self.mcp)
 
     # -- persistence ------------------------------------------------------
 
@@ -480,7 +601,7 @@ class RepoManager:
             self._save()
             return self._repo_status(cfg, WatcherHandle())
 
-    def remove_repo(self, path: str) -> None:
+    def remove_repo(self, path: str) -> dict[str, Any]:
         key = str(Path(path).expanduser().resolve())
         self.stop_watcher(key)
         with self._lock:
@@ -489,6 +610,40 @@ class RepoManager:
             del self._repos[key]
             self._watchers.pop(key, None)
             self._save()
+
+        # Removing a repo should also purge its per-repo data (graph nodes in
+        # Memgraph and vectors in Qdrant) so a stale index never resurfaces.
+        return {"deleted": key, "cleanup": self._cleanup_repo_databases(key)}
+
+    def _cleanup_repo_databases(self, repo_path: str) -> dict[str, str]:
+        """Best-effort removal of per-repo data from Memgraph and Qdrant."""
+        cleanup: dict[str, str] = {}
+
+        try:
+            from codebase_rag.services.graph_service import MemgraphIngestor
+
+            with MemgraphIngestor(
+                host=MEMGRAPH_HOST,
+                port=MEMGRAPH_PORT,
+                repo_path=repo_path,
+                connect_retries=1,
+            ) as ingestor:
+                ingestor.clean_database()
+            cleanup["memgraph"] = "cleaned"
+        except Exception as exc:
+            logger.warning("Failed to clean Memgraph data for %s: %s", repo_path, exc)
+            cleanup["memgraph"] = f"error: {exc}"
+
+        try:
+            from codebase_rag.vector_store import clean_collection
+
+            clean_collection(repo_path)
+            cleanup["qdrant"] = "cleaned"
+        except Exception as exc:
+            logger.warning("Failed to clean Qdrant data for %s: %s", repo_path, exc)
+            cleanup["qdrant"] = f"error: {exc}"
+
+        return cleanup
 
     def get_repo(self, path: str) -> tuple[RepoConfig, WatcherHandle]:
         key = str(Path(path).expanduser().resolve())
@@ -519,6 +674,11 @@ class RepoManager:
     ) -> WatcherHandle:
         key = str(Path(path).expanduser().resolve())
         cfg, _ = self.get_repo(key)
+
+        def _on_exit(h: WatcherHandle) -> None:
+            if h.update_in_progress:
+                h.update_in_progress = False
+
         with self._lock:
             handle = self._watchers.get(key) or WatcherHandle()
             if handle.proc and handle.proc.poll() is None:
@@ -531,6 +691,9 @@ class RepoManager:
             if groups:
                 for stale in groups[:-1]:
                     _stop_group_id(stale)
+                handle.proc = None
+                handle.update_in_progress = False
+                handle.last_error = None
                 handle.adopted_pid = groups[-1]
                 handle.state = "running"
                 self._watchers[key] = handle
@@ -538,6 +701,7 @@ class RepoManager:
                     f"[watcher] adopted existing watcher (pgid={groups[-1]}, "
                     f"stopped {len(groups) - 1} stale duplicate(s))"
                 )
+                handle._monitor = _start_adopted_monitor(groups[-1], handle, _on_exit)
                 return handle
             self._watchers[key] = handle
 
@@ -575,10 +739,6 @@ class RepoManager:
         handle.update_in_progress = full_scan
         handle.last_error = None
         handle.logs.append(f"[watcher] starting: {shlex.join(cmd)}")
-
-        def _on_exit(h: WatcherHandle) -> None:
-            if h.update_in_progress:
-                h.update_in_progress = False
 
         handle._reader = _LineReader(
             proc,
@@ -665,9 +825,11 @@ def health() -> dict[str, Any]:
 
 @app.get("/api/status")
 def status() -> dict[str, Any]:
+    memgraph = _probe_memgraph_liveness()
     return {
         "repos": manager.list_repos(),
         "mcp": manager.mcp.status(),
+        "memgraph": memgraph,
         "config": {
             "project_root": str(PROJECT_ROOT),
             "memgraph": {"host": MEMGRAPH_HOST, "port": MEMGRAPH_PORT},
@@ -690,8 +852,7 @@ def add_repo(req: AddRepoRequest) -> dict[str, Any]:
 
 @app.delete("/api/repos/{path:path}")
 def delete_repo(path: str) -> dict[str, Any]:
-    manager.remove_repo(path)
-    return {"deleted": str(Path(path).expanduser().resolve())}
+    return manager.remove_repo(path)
 
 
 @app.get("/api/repos/{path:path}/logs")
@@ -741,12 +902,15 @@ def mcp_start(req: McpStartRequest) -> dict[str, Any]:
         for stale in mcp_groups:
             if stale != keep:
                 _stop_group_id(stale)
+        mcp.proc = None
+        mcp.last_error = None
         mcp.adopted_pid = keep
         mcp.state = "running"
         mcp.logs.append(
             f"[mcp] adopted existing MCP server (pgid={keep}, "
             f"stopped {len(mcp_groups) - 1} stale duplicate(s))"
         )
+        mcp._monitor = _start_adopted_monitor(keep, mcp)
         return mcp.status()
 
     repo_path = req.repo_path
@@ -798,7 +962,7 @@ def mcp_start(req: McpStartRequest) -> dict[str, Any]:
         on_line=manager._tick_mcp,
     )
     mcp._reader.start()
-    mcp._monitor = _start_monitor(proc, mcp, _on_exit)
+    mcp._monitor = _start_monitor(proc, mcp, _on_exit, start_timeout=MCP_START_TIMEOUT)
     return mcp.status()
 
 
@@ -852,6 +1016,44 @@ def run_query(req: QueryRequest) -> dict[str, Any]:
         raise
     except Exception as exc:
         raise HTTPException(500, f"Query failed: {exc}") from exc
+
+
+# -- Quick semantic retrieval (quick_semantic_retrieval) ------------------------
+
+
+@app.post("/api/semantic")
+def run_semantic(req: SemanticSearchRequest) -> dict[str, Any]:
+    """Run the quick_semantic_retrieval flow against a registered repo.
+
+    Returns semantic snippet matches with filename/line metadata and scores,
+    useful for debugging why a search phrase returns few or no matches.
+    """
+    manager.get_repo(req.repo_path)
+    try:
+        import asyncio
+
+        from codebase_rag.mcp.server import GraphCodeMCPContext
+
+        context = GraphCodeMCPContext(
+            repo_path=str(Path(req.repo_path).expanduser().resolve()),
+            batch_size=DEFAULT_BATCH_SIZE,
+        )
+        result = asyncio.run(
+            context.quick_semantic_retrieval(
+                search_phrase=req.search_phrase,
+                top_n=req.top_n,
+            )
+        )
+        return {
+            "repo_path": result.get("repo_path", req.repo_path),
+            "search_phrase": req.search_phrase,
+            "top_n": req.top_n,
+            "matches": result.get("matches", []),
+        }
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(500, f"Semantic search failed: {exc}") from exc
 
 
 if __name__ == "__main__":

@@ -1,4 +1,4 @@
-import type { StatusResponse } from './types'
+import type { SemanticResult, StatusResponse } from './types'
 
 const BASE = '/api'
 
@@ -9,7 +9,28 @@ async function req<T>(path: string, init?: RequestInit): Promise<T> {
   })
   if (!res.ok) {
     const body = await res.text().catch(() => '')
-    throw new Error(body || `${res.status} ${res.statusText}`)
+    let message = body || `${res.status} ${res.statusText}`
+    try {
+      const parsed: unknown = JSON.parse(body)
+      if (typeof parsed === 'object' && parsed !== null) {
+        const detail = (parsed as { detail?: unknown }).detail
+        if (typeof detail === 'string') {
+          message = detail
+        } else if (Array.isArray(detail)) {
+          const parts = detail
+            .map((d) =>
+              typeof d === 'object' && d !== null
+                ? (d as { msg?: unknown }).msg
+                : undefined,
+            )
+            .filter((m): m is string => typeof m === 'string')
+          if (parts.length > 0) message = parts.join('; ')
+        }
+      }
+    } catch {
+      // non-JSON body: keep the raw text
+    }
+    throw new Error(message)
   }
   return res.json() as Promise<T>
 }
@@ -27,8 +48,20 @@ export function addRepo(payload: {
   return req('/repos', { method: 'POST', body: JSON.stringify(payload) })
 }
 
-export function removeRepo(path: string) {
-  return req(`/repos/${encodeRepoPath(path)}`, { method: 'DELETE' })
+export async function removeRepo(path: string) {
+  const res = await req<{
+    deleted: string
+    cleanup?: Record<string, string>
+  }>(`/repos/${encodeRepoPath(path)}`, { method: 'DELETE' })
+  const failures = Object.entries(res.cleanup ?? {})
+    .filter(([, v]) => v.startsWith('error'))
+    .map(([k, v]) => `${k}: ${v}`)
+  if (failures.length > 0) {
+    throw new Error(
+      `Repo removed, but database cleanup failed — ${failures.join('; ')}`,
+    )
+  }
+  return res
 }
 
 export function startWatcher(path: string, fullScan = false) {
@@ -71,6 +104,21 @@ export function runQuery(repoPath: string, question: string): Promise<QueryResul
   return req('/query', {
     method: 'POST',
     body: JSON.stringify({ repo_path: repoPath, question }),
+  })
+}
+
+export function runSemantic(
+  repoPath: string,
+  searchPhrase: string,
+  topN: number,
+): Promise<SemanticResult> {
+  return req('/semantic', {
+    method: 'POST',
+    body: JSON.stringify({
+      repo_path: repoPath,
+      search_phrase: searchPhrase,
+      top_n: topN,
+    }),
   })
 }
 

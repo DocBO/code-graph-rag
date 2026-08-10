@@ -9,10 +9,11 @@ import {
   removeRepo,
   repoLogs,
   runQuery,
+  runSemantic,
   startWatcher,
   stopWatcher,
 } from './api'
-import type { RepoInfo, StatusResponse } from './types'
+import type { RepoInfo, SemanticResult, StatusResponse } from './types'
 import Markdown from './Markdown'
 
 type LampTone = 'off' | 'ok' | 'busy' | 'err'
@@ -88,6 +89,10 @@ function RepoCard({
   const { watcher } = repo
   const tone = lampTone(watcher.state)
   const busy = watcher.state === 'starting' || watcher.state === 'stopping' || loading
+  const stopVisible =
+    watcher.state === 'running' ||
+    watcher.state === 'starting' ||
+    watcher.state === 'stopping'
   const logRef = useRef<HTMLPreElement>(null)
 
   useEffect(() => {
@@ -135,8 +140,12 @@ function RepoCard({
       )}
 
       <footer className="card-actions">
-        {watcher.state === 'running' || watcher.state === 'starting' ? (
-          <button className="btn btn-stop" onClick={onStop} disabled={busy}>
+        {stopVisible ? (
+          <button
+            className="btn btn-stop"
+            onClick={onStop}
+            disabled={loading || watcher.state === 'stopping'}
+          >
             Stop watcher
           </button>
         ) : (
@@ -144,7 +153,7 @@ function RepoCard({
             Start watcher
           </button>
         )}
-        {watcher.state !== 'running' && watcher.state !== 'starting' && (
+        {!stopVisible && (
           <button
             className="btn btn-start btn-fullscan"
             onClick={onStartWithScan}
@@ -291,8 +300,149 @@ function QueryPanel({
   )
 }
 
-function AddRepoForm({ onAdd }: { onAdd: () => void }) {
-  const [path, setPath] = useState('')
+function SemanticPanel({
+  repos,
+  defaultRepo,
+}: {
+  repos: RepoInfo[]
+  defaultRepo: string
+}) {
+  const [repoPath, setRepoPath] = useState(defaultRepo)
+  const [phrase, setPhrase] = useState('')
+  const [topN, setTopN] = useState('5')
+  const [result, setResult] = useState<SemanticResult | null>(null)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [expanded, setExpanded] = useState<Record<number, boolean>>({})
+
+  useEffect(() => {
+    if (repos.length > 0 && !repos.some((r) => r.path === repoPath)) {
+      setRepoPath(repos[0].path)
+    }
+  }, [repos, repoPath])
+
+  const submit = async () => {
+    if (!repoPath || !phrase.trim()) return
+    setBusy(true)
+    setError(null)
+    setResult(null)
+    setExpanded({})
+    try {
+      const n = Math.max(1, Math.min(50, parseInt(topN, 10) || 5))
+      const res = await runSemantic(repoPath, phrase.trim(), n)
+      setResult(res)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const toggleMatch = (idx: number) => {
+    setExpanded((s) => ({ ...s, [idx]: !s[idx] }))
+  }
+
+  return (
+    <section className="card query-card semantic-card">
+      <header className="card-head">
+        <div className="card-ident">
+          <span className="query-glyph" aria-hidden>
+            ⌕
+          </span>
+          <div className="card-title">
+            <h3>Quick Semantic Retrieval</h3>
+            <code className="card-path">debug: raw vector matches + scores</code>
+          </div>
+        </div>
+        <span className={`badge badge-${busy ? 'updating' : 'stopped'}`}>
+          {busy ? 'SEARCHING…' : result ? `${result.matches.length} MATCHES` : 'READY'}
+        </span>
+      </header>
+
+      <div className="query-form">
+        <select
+          className="input mcp-select"
+          value={repoPath}
+          onChange={(e) => setRepoPath(e.target.value)}
+          disabled={busy}
+        >
+          {repos.length === 0 && <option value="">no repos registered</option>}
+          {repos.map((r) => (
+            <option key={r.path} value={r.path}>
+              {r.name} — {r.path}
+            </option>
+          ))}
+        </select>
+        <textarea
+          className="input query-input"
+          rows={2}
+          placeholder="e.g. SkillExecutor definition"
+          value={phrase}
+          onChange={(e) => setPhrase(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) submit()
+          }}
+          disabled={busy}
+        />
+        <div className="semantic-controls">
+          <label className="input-num">
+            <span className="meta-k">TOP N</span>
+            <input
+              type="number"
+              min={1}
+              max={50}
+              value={topN}
+              onChange={(e) => setTopN(e.target.value)}
+              disabled={busy}
+            />
+          </label>
+          <button
+            className="btn btn-start query-submit"
+            onClick={submit}
+            disabled={busy || !repoPath || !phrase.trim()}
+          >
+            {busy ? 'Searching…' : 'Search'}
+          </button>
+        </div>
+      </div>
+
+      {error && <div className="card-error">{error}</div>}
+
+      {result && (
+        <div className="semantic-result">
+          <div className="query-result-head">
+            <span className="meta-k">
+              {result.matches.length} MATCHES — {result.repo_path}
+            </span>
+          </div>
+          {result.matches.length === 0 && (
+            <p className="empty">No semantic matches for this phrase.</p>
+          )}
+          {result.matches.map((m, idx) => (
+            <article key={idx} className="match" data-tone={m.score !== null && m.score >= 0.4 ? 'ok' : 'off'}>
+              <header className="match-head" onClick={() => toggleMatch(idx)}>
+                <span className="match-score">{m.score !== null ? m.score.toFixed(3) : '—'}</span>
+                <span className="match-name">
+                  <code>{m.qualified_name ?? 'unknown'}</code>
+                  <span className="meta-k"> · {m.type ?? 'Code'}</span>
+                </span>
+                <span className="match-loc">
+                  {m.filename ? `${m.filename}${m.start_line ? `:${m.start_line}` : ''}` : '—'}
+                </span>
+                <span className="match-toggle">{expanded[idx] ? '▾' : '▸'}</span>
+              </header>
+              {expanded[idx] && (
+                <pre className="match-snippet">{m.snippet ?? '— no snippet —'}</pre>
+              )}
+            </article>
+          ))}
+        </div>
+      )}
+    </section>
+  )
+}
+
+function AddRepoForm({ onAdd }: { onAdd: () => void }) {  const [path, setPath] = useState('')
   const [debounce, setDebounce] = useState('30')
   const [batchSize, setBatchSize] = useState('2000')
   const [noUpdate, setNoUpdate] = useState(true)
@@ -389,6 +539,10 @@ function McpPanel({
   onLogs: () => void
 }) {
   const tone = lampTone(status.state)
+  const stopVisible =
+    status.state === 'running' ||
+    status.state === 'starting' ||
+    status.state === 'stopping'
   const [selected, setSelected] = useState<string>('')
   const logRef = useRef<HTMLPreElement>(null)
 
@@ -427,8 +581,12 @@ function McpPanel({
       {status.last_error && <div className="card-error">{status.last_error}</div>}
 
       <footer className="card-actions">
-        {status.state === 'running' || status.state === 'starting' ? (
-          <button className="btn btn-stop" onClick={onStop} disabled={status.state === 'starting'}>
+        {stopVisible ? (
+          <button
+            className="btn btn-stop"
+            onClick={onStop}
+            disabled={status.state === 'stopping'}
+          >
             Stop MCP
           </button>
         ) : (
@@ -540,9 +698,19 @@ export default function App() {
           </h1>
         </div>
         <div className="topbar-right">
-          <span className="sys chip">
+          <span
+            className={`sys chip chip-mg${!status?.memgraph?.alive ? ' chip-mg-err' : ''}`}
+          >
+            <StatusLamp tone={status?.memgraph?.alive ? 'ok' : 'err'} pulse={!status?.memgraph} />
             <span className="meta-k">MEMGRAPH</span>
             {cfg ? `${cfg.memgraph.host}:${cfg.memgraph.port}` : '…'}
+            <span className="chip-state">
+              {!status?.memgraph
+                ? '…'
+                : status.memgraph.alive
+                  ? 'ALIVE'
+                  : 'DOWN'}
+            </span>
           </span>
           <span className="sys chip">
             <span className="meta-k">PROJECT</span>
@@ -568,6 +736,8 @@ export default function App() {
         />
 
         <QueryPanel repos={repos} defaultRepo={repos[0]?.path ?? ''} />
+
+        <SemanticPanel repos={repos} defaultRepo={repos[0]?.path ?? ''} />
 
         <AddRepoForm onAdd={refresh} />
 

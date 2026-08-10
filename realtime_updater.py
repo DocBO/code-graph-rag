@@ -11,6 +11,7 @@ from watchdog.observers import Observer
 
 from codebase_rag.config import IGNORE_PATTERNS, IGNORE_SUFFIXES, settings
 from codebase_rag.graph_updater import GraphUpdater
+from codebase_rag.ingest_metadata import write_ingest_metadata
 from codebase_rag.language_config import get_language_config
 from codebase_rag.parser_loader import load_parsers
 from codebase_rag.services.graph_service import MemgraphIngestor
@@ -232,6 +233,10 @@ class CodeChangeEventHandler(FileSystemEventHandler):
                 f"✓ Graph update completed in {elapsed:.2f}s for {num_files} file(s)."
             )
 
+            # Refresh ingest metadata so ingest_status no longer reports these
+            # files as pending changes.
+            write_ingest_metadata(self.updater.repo_path)
+
             with self.pending_changes_lock:
                 self.pending_changes.difference_update(pending_snapshot)
         except Exception:
@@ -324,6 +329,9 @@ def start_watcher(
         else:
             logger.info("Performing initial full codebase scan...")
             updater.run()
+            # Refresh ingest metadata so ingest_status reports a clean index after
+            # the full scan (covers CLI startup and UI-triggered full updates).
+            write_ingest_metadata(repo_path_obj)
             logger.success("Initial scan complete. Starting real-time watcher.")
 
         event_handler = CodeChangeEventHandler(updater, debounce_seconds=debounce)

@@ -26,6 +26,12 @@ export interface McpStatus {
   log_count: number
 }
 
+export interface MemgraphHealth {
+  at: number
+  alive: boolean
+  error: string | null
+}
+
 export interface ControlConfig {
   project_root: string
   memgraph: { host: string; port: number }
@@ -37,5 +43,23 @@ export interface ControlConfig {
 export interface StatusResponse {
   repos: RepoInfo[]
   mcp: McpStatus
+  memgraph: MemgraphHealth
   config: ControlConfig
+}
+
+export interface SemanticMatch {
+  qualified_name: string | null
+  type: string | null
+  score: number | null
+  filename: string | null
+  start_line: number | null
+  end_line: number | null
+  snippet: string | null
+}
+
+export interface SemanticResult {
+  repo_path: string
+  search_phrase: string
+  top_n: number
+  matches: SemanticMatch[]
 }

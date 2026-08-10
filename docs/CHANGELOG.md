@@ -1,5 +1,31 @@
 # Changelog
 
+## 2026-08-09
+
+### Control Panel: Quick Semantic Retrieval Debug Panel ✅
+- **Added `/api/semantic` backend endpoint** — runs the same `GraphCodeMCPContext.quick_semantic_retrieval` flow used by the MCP tool against a registered repo, returning `{repo_path, search_phrase, top_n, matches[]}` with `qualified_name`, `type`, `score`, `filename`, `start_line`, `end_line`, and `snippet`.
+- **Added Quick Semantic Retrieval debug card to the UI** — a dedicated panel (repo selector, search phrase, top-N input) that renders raw vector matches with similarity scores and expandable code snippets. Matches at score ≥ 0.4 are highlighted green, so an empty/weak result is immediately visible when debugging why a phrase returns few or no matches.
+- **Verified** — `/api/semantic` returns SkillExecutor match (score 0.462) against elysia; frontend `tsc && vite build` clean; dev server transforms the updated `App.tsx`.
+
+### Control Panel: Live Memgraph Health Check ✅
+- **Added live Memgraph liveness probe** — backend `/api/status` now returns a `memgraph` object (`{at, alive, error}`) computed from a short TCP connect to the Bolt port (`MEMGRAPH_HOST:MEMGRAPH_PORT`), cached for ~2s so the polling dashboard stays cheap.
+- **UI-visible indicator** — the topbar MEMGRAPH chip now shows a status lamp plus `ALIVE`/`DOWN` text; the chip and state turn red when Memgraph is unreachable, and a `chip-mg-err` style highlights the failure. This surfaces the exact failure mode (e.g. Memgraph OOM-killed) that previously only manifested as slow/empty `query_codebase` and `quick_semantic_retrieval` responses.
+- **Fast & safe** — uses a raw socket probe with a 2s timeout rather than the full Bolt driver, so the status endpoint never blocks and reflects real reachability.
+- **Verified** — backend `/api/status` returns `alive: true` when Memgraph is up and `alive: false` (`Connection refused`) against a closed port; frontend `tsc && vite build` clean.
+
+### Fix: `changes.total` stays stale after autoupdate / UI full scan ✅
+- **Fixed `ingest_status` reporting stale changes after updates** — `realtime_updater.py` never refreshed `.graphcode_ingest.json` after a successful incremental autoupdate or the initial/UI-triggered full scan (`GraphUpdater.run()` does not write metadata itself; only the CLI `update-graph` and MCP `start_updater` did).
+- **Root cause** — `summarize_ingest_status` computes `changes.total` by diffing the current file index against the stored metadata. Because metadata was never refreshed on these paths, `changes.total` stayed > 0 even after the graph was current, so `ingest_status`/`start_updater` kept reporting a stale index.
+- **Fix** — `write_ingest_metadata` is now called after a successful incremental update in `_process_pending_changes` and after the initial full scan in `start_watcher` (covering CLI startup and UI-triggered full updates).
+- **Test added** — verifies a successful incremental update refreshes ingest metadata; patched `write_ingest_metadata` across `test_realtime_updater.py` so tests never touch the real repo.
+
+### MCP Tool: `start_updater` ✅
+- **Added `start_updater` MCP tool** — runs a one-shot full graph update for a repo so agents can re-sync the knowledge graph when `ingest_status` reports a stale index.
+- **Stale-aware** — checks ingest metadata via `summarize_ingest_status`; if there are no pending changes and `force` is false, it returns `started=false` with reason `index_fresh` and performs no update. Otherwise it runs `GraphUpdater.run()` (same path as the CLI `update-graph` command) and refreshes ingest metadata on success.
+- **Parameters** — optional `repo_path` (defaults to the server's configured repo) and `force` (boolean, default `false`).
+- **Returns** — `repo_path`, `started`, `reason` (`stale`/`forced`/`index_fresh`), `last_ingest`, `changes` (added/deleted/modified/total), `metadata_path`.
+- **Docs & tests** — documented in `docs/mcp-tools.md` section 6; added tests covering tool registration, dispatch, fresh-index skip, and stale-index run.
+
 ## 2026-08-08
 
 ### Markdown Renderer Fix: Overlapping List Markers ✅

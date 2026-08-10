@@ -1,5 +1,5 @@
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 from watchdog.events import (
@@ -11,11 +11,18 @@ from watchdog.events import (
 )
 
 from realtime_updater import (
-    CodeChangeEventHandler,
     MODULE_CALLER_PATHS_QUERY,
     MODULE_CALLS_DELETE_QUERY,
     MODULE_SUBGRAPH_DELETE_QUERY,
+    CodeChangeEventHandler,
 )
+
+
+@pytest.fixture(autouse=True)
+def _mock_write_ingest_metadata() -> MagicMock:
+    """Patch write_ingest_metadata so tests never touch the real repo metadata."""
+    with patch("realtime_updater.write_ingest_metadata") as mock_write:
+        yield mock_write
 
 
 @pytest.fixture
@@ -44,6 +51,23 @@ def test_file_creation_flow(
     )
     mock_updater.update_embeddings_for_files.assert_called_once_with([test_file])
     mock_updater.ingestor.flush_all.assert_called_once()
+
+
+def test_incremental_update_refreshes_ingest_metadata(
+    event_handler: CodeChangeEventHandler,
+    mock_updater: MagicMock,
+    temp_repo: Path,
+    _mock_write_ingest_metadata: MagicMock,
+) -> None:
+    """Test that a successful incremental update refreshes ingest metadata."""
+    test_file = temp_repo / "new_file.py"
+    test_file.write_text("def new_func(): pass")
+    event = FileCreatedEvent(str(test_file))
+
+    event_handler.dispatch(event)
+    event_handler._process_pending_changes()
+
+    _mock_write_ingest_metadata.assert_called_once_with(mock_updater.repo_path)
 
 
 def test_file_modification_flow(

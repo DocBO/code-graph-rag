@@ -130,7 +130,9 @@ class CypherGenerator:
             raise LLMGenerationError(f"Cypher generation failed: {e}") from e
 
 
-def create_rag_orchestrator(tools: list[Tool]) -> Agent:
+def create_rag_orchestrator(
+    tools: list[Tool], system_prompt: str | None = None
+) -> Agent:
     """Factory function to create the main RAG orchestrator agent."""
     try:
         # Get active orchestrator model configuration
@@ -152,7 +154,7 @@ def create_rag_orchestrator(tools: list[Tool]) -> Agent:
 
         return Agent(
             model=llm,
-            system_prompt=RAG_ORCHESTRATOR_SYSTEM_PROMPT,
+            system_prompt=system_prompt or RAG_ORCHESTRATOR_SYSTEM_PROMPT,
             tools=tools,
         )
     except Exception as e:

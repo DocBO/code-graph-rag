@@ -24,10 +24,72 @@ from ..graph_updater import GraphUpdater
 from ..ingest_metadata import summarize_ingest_status, write_ingest_metadata
 from ..parser_loader import load_parsers
 from ..runtime import initialize_services_and_agent
+from ..schemas import CodeSnippet, GraphData
 from ..services.graph_service import MemgraphIngestor
 from ..services.llm import CypherGenerator
 from ..tools.semantic_search import get_function_source_code, semantic_code_search_async
 from ..utils.chunking import chunk_boundaries
+
+_GRAPH_TOOLS = {"query_codebase_knowledge_graph"}
+_SEMANTIC_TOOLS = {"semantic_search_by_intent", "semantic_search_functions"}
+
+
+def _extract_retrieval_metadata(messages: list[Any]) -> dict[str, Any]:
+    """Collect tool usage flags and structured source citations from agent run messages."""
+
+    used_graph = False
+    used_semantic_search = False
+    sources: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+
+    for message in messages:
+        for part in getattr(message, "parts", []):
+            kind = getattr(part, "part_kind", None)
+            if kind == "tool-call":
+                tool_name = getattr(part, "tool_name", "")
+                if tool_name in _GRAPH_TOOLS:
+                    used_graph = True
+                elif tool_name in _SEMANTIC_TOOLS:
+                    used_semantic_search = True
+            elif kind == "tool-return":
+                content = getattr(part, "content", None)
+                if isinstance(content, GraphData):
+                    for row in content.results:
+                        qualified_name = row.get("qualified_name") or row.get("name")
+                        filename = row.get("path")
+                        if not qualified_name or not filename:
+                            continue
+                        key = (str(qualified_name), str(filename))
+                        if key in seen:
+                            continue
+                        seen.add(key)
+                        sources.append(
+                            {
+                                "qualified_name": str(qualified_name),
+                                "filename": str(filename),
+                                "start_line": None,
+                                "end_line": None,
+                            }
+                        )
+                elif isinstance(content, CodeSnippet):
+                    key = (content.qualified_name, content.file_path)
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    sources.append(
+                        {
+                            "qualified_name": content.qualified_name,
+                            "filename": content.file_path,
+                            "start_line": content.line_start,
+                            "end_line": content.line_end,
+                        }
+                    )
+
+    return {
+        "used_graph": used_graph,
+        "used_semantic_search": used_semantic_search,
+        "sources": sources,
+    }
 
 
 class TransportLoggingMiddleware:
@@ -487,13 +549,30 @@ class GraphCodeMCPContext:
             batch_size=self.batch_size,
             repo_path=target_repo,
         ) as ingestor:
-            rag_agent = initialize_services_and_agent(str(target_repo), ingestor)
+            rag_agent = initialize_services_and_agent(
+                str(target_repo), ingestor, read_only=True
+            )
             response = await rag_agent.run(question)
+
+        retrieval = _extract_retrieval_metadata(response.all_messages())
+        last_ingest, changes, _ = summarize_ingest_status(target_repo)
+        if last_ingest is None:
+            index_status = "no_metadata"
+        elif changes.get("total", 0) == 0:
+            index_status = "fresh"
+        else:
+            index_status = "stale"
 
         return {
             "repo_path": str(target_repo),
             "question": question,
             "response": response.output,
+            "sources": retrieval["sources"],
+            "retrieval": {
+                "used_graph": retrieval["used_graph"],
+                "used_semantic_search": retrieval["used_semantic_search"],
+                "index_status": index_status,
+            },
         }
 
     async def quick_semantic_retrieval(
@@ -744,8 +823,34 @@ class GraphCodeMCPServer:
                         "repo_path": {"type": "string"},
                         "question": {"type": "string"},
                         "response": {"type": "string"},
+                        "sources": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "qualified_name": {"type": ["string", "null"]},
+                                    "filename": {"type": ["string", "null"]},
+                                    "start_line": {"type": ["integer", "null"]},
+                                    "end_line": {"type": ["integer", "null"]},
+                                },
+                            },
+                        },
+                        "retrieval": {
+                            "type": "object",
+                            "properties": {
+                                "used_graph": {"type": "boolean"},
+                                "used_semantic_search": {"type": "boolean"},
+                                "index_status": {"type": "string"},
+                            },
+                        },
                     },
-                    "required": ["repo_path", "question", "response"],
+                    "required": [
+                        "repo_path",
+                        "question",
+                        "response",
+                        "sources",
+                        "retrieval",
+                    ],
                 },
             ),
             types.Tool(

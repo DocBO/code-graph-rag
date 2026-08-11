@@ -6,8 +6,14 @@ from typing import cast
 import anyio
 import pytest
 from mcp.client.session import ClientSession
+from pydantic_ai.messages import ModelRequest, ToolCallPart, ToolReturnPart
 
-from codebase_rag.mcp.server import GraphCodeMCPContext, GraphCodeMCPServer
+from codebase_rag.mcp.server import (
+    GraphCodeMCPContext,
+    GraphCodeMCPServer,
+    _extract_retrieval_metadata,
+)
+from codebase_rag.schemas import CodeSnippet, GraphData
 
 
 class StubContext:
@@ -112,6 +118,12 @@ class StubContext:
             "repo_path": repo_path or "/workspace",
             "question": question,
             "response": "Standard agent response",
+            "sources": [],
+            "retrieval": {
+                "used_graph": False,
+                "used_semantic_search": False,
+                "index_status": "fresh",
+            },
         }
 
     async def quick_semantic_retrieval(
@@ -200,6 +212,8 @@ def test_mcp_server_lists_tools_and_invokes_them() -> None:
                     "repo_path",
                     "question",
                     "response",
+                    "sources",
+                    "retrieval",
                 }
 
                 quick_semantic_tool = next(
@@ -262,6 +276,12 @@ def test_mcp_server_lists_tools_and_invokes_them() -> None:
                     "repo_path": "/workspace",
                     "question": "How is the frontend rendered?",
                     "response": "Standard agent response",
+                    "sources": [],
+                    "retrieval": {
+                        "used_graph": False,
+                        "used_semantic_search": False,
+                        "index_status": "fresh",
+                    },
                 }
 
                 removed_strategy_result = await session.call_tool(
@@ -356,14 +376,28 @@ async def test_mcp_context_query_uses_standard_agent(
             class Result:
                 output = "Standard answer"
 
+                def all_messages(self) -> list[object]:
+                    return []
+
             return Result()
 
-    def fake_initialize(repo_path: str, ingestor: DummyIngestor) -> DummyAgent:
+    def fake_initialize(
+        repo_path: str, ingestor: DummyIngestor, read_only: bool = False
+    ) -> DummyAgent:
         captured["repo_path"] = repo_path
         captured["ingestor"] = ingestor
+        captured["read_only"] = read_only
         return DummyAgent()
 
     monkeypatch.setattr("codebase_rag.mcp.server.MemgraphIngestor", DummyIngestor)
+    monkeypatch.setattr(
+        "codebase_rag.mcp.server.summarize_ingest_status",
+        lambda repo: (
+            "2025-11-15T12:00:00Z",
+            {"added": 0, "deleted": 0, "modified": 0, "total": 0},
+            None,
+        ),
+    )
     monkeypatch.setattr(
         "codebase_rag.mcp.server.initialize_services_and_agent",
         fake_initialize,
@@ -374,10 +408,15 @@ async def test_mcp_context_query_uses_standard_agent(
 
     assert captured["prompt"] == "Explain the checkout frontend"
     assert captured["repo_path"] == str(tmp_path.resolve())
-    assert result == {
-        "repo_path": str(tmp_path.resolve()),
-        "question": "Explain the checkout frontend",
-        "response": "Standard answer",
+    assert captured["read_only"] is True
+    assert result["repo_path"] == str(tmp_path.resolve())
+    assert result["question"] == "Explain the checkout frontend"
+    assert result["response"] == "Standard answer"
+    assert result["sources"] == []
+    assert result["retrieval"] == {
+        "used_graph": False,
+        "used_semantic_search": False,
+        "index_status": "fresh",
     }
 
 
@@ -540,4 +579,85 @@ async def test_mcp_context_start_updater_runs_when_stale(
     assert result["reason"] == "stale"
     assert captured["updater_run"] is True
     assert captured["metadata_repo"] == tmp_path.resolve()
+
+
+def test_extract_retrieval_metadata_collects_usage_and_sources() -> None:
+    request = ModelRequest(
+        parts=[
+            ToolCallPart(tool_name="query_codebase_knowledge_graph", args="x"),
+            ToolReturnPart(
+                tool_name="query_codebase_knowledge_graph",
+                tool_call_id="1",
+                content=GraphData(
+                    query_used="MATCH (n) RETURN n",
+                    results=[
+                        {
+                            "qualified_name": "pkg.auth.login",
+                            "path": "src/auth.py",
+                            "name": "login",
+                        },
+                        {
+                            "qualified_name": "pkg.auth.login",
+                            "path": "src/auth.py",
+                            "name": "login",
+                        },
+                        {"name": "orphan", "path": "src/other.py"},
+                    ],
+                    summary="ok",
+                ),
+            ),
+            ToolCallPart(tool_name="semantic_search_functions", args="y"),
+            ToolReturnPart(
+                tool_name="semantic_search_functions",
+                tool_call_id="2",
+                content="Found 1 semantic match",
+            ),
+            ToolCallPart(tool_name="get_code_snippet", args="z"),
+            ToolReturnPart(
+                tool_name="get_code_snippet",
+                tool_call_id="3",
+                content=CodeSnippet(
+                    qualified_name="pkg.auth.logout",
+                    source_code="def logout(): ...",
+                    file_path="src/auth.py",
+                    line_start=30,
+                    line_end=41,
+                ),
+            ),
+        ]
+    )
+
+    result = _extract_retrieval_metadata([request])
+
+    assert result["used_graph"] is True
+    assert result["used_semantic_search"] is True
+    assert result["sources"] == [
+        {
+            "qualified_name": "pkg.auth.login",
+            "filename": "src/auth.py",
+            "start_line": None,
+            "end_line": None,
+        },
+        {
+            "qualified_name": "orphan",
+            "filename": "src/other.py",
+            "start_line": None,
+            "end_line": None,
+        },
+        {
+            "qualified_name": "pkg.auth.logout",
+            "filename": "src/auth.py",
+            "start_line": 30,
+            "end_line": 41,
+        },
+    ]
+
+
+def test_extract_retrieval_metadata_empty_messages() -> None:
+    result = _extract_retrieval_metadata([])
+    assert result == {
+        "used_graph": False,
+        "used_semantic_search": False,
+        "sources": [],
+    }
 

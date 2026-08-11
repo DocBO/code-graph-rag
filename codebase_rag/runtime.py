@@ -7,6 +7,7 @@ from typing import Any
 from rich.console import Console
 
 from .config import settings
+from .prompts import RAG_READ_ONLY_SYSTEM_PROMPT
 from .services.graph_service import MemgraphIngestor
 from .services.llm import CypherGenerator, create_rag_orchestrator
 from .tools.code_retrieval import CodeRetriever, create_code_retrieval_tool
@@ -25,9 +26,16 @@ from .tools.shell_command import ShellCommander, create_shell_command_tool
 
 
 def initialize_services_and_agent(
-    repo_path: str, ingestor: MemgraphIngestor, console: Console | None = None
+    repo_path: str,
+    ingestor: MemgraphIngestor,
+    console: Console | None = None,
+    read_only: bool = False,
 ) -> Any:
-    """Initializes all services and creates the RAG agent."""
+    """Initializes all services and creates the RAG agent.
+
+    When ``read_only`` is True, mutation-capable tools (file writer, file
+    editor, shell command) are excluded and a read-only system prompt is used.
+    """
 
     from .providers.base import get_provider  # Local import to avoid circular deps
 
@@ -63,14 +71,31 @@ def initialize_services_and_agent(
     query_tool = create_query_tool(ingestor, cypher_generator, console)
     code_tool = create_code_retrieval_tool(code_retriever)
     file_reader_tool = create_file_reader_tool(file_reader)
-    file_writer_tool = create_file_writer_tool(file_writer)
-    file_editor_tool = create_file_editor_tool(file_editor)
-    shell_command_tool = create_shell_command_tool(shell_commander)
     directory_lister_tool = create_directory_lister_tool(directory_lister)
     document_analyzer_tool = create_document_analyzer_tool(document_analyzer)
     semantic_search_tool = create_semantic_search_tool(repo_path=repo_path)
     enhanced_semantic_search_tool = create_enhanced_semantic_search_tool(repo_path=repo_path, console=console)
     get_source_tool = create_get_source_tool(repo_path=repo_path)
+
+    if read_only:
+        tools = [
+            query_tool,
+            code_tool,
+            file_reader_tool,
+            directory_lister_tool,
+            document_analyzer_tool,
+            semantic_search_tool,
+            enhanced_semantic_search_tool,
+            get_source_tool,
+        ]
+        rag_agent = create_rag_orchestrator(
+            tools=tools, system_prompt=RAG_READ_ONLY_SYSTEM_PROMPT
+        )
+        return rag_agent
+
+    file_writer_tool = create_file_writer_tool(file_writer)
+    file_editor_tool = create_file_editor_tool(file_editor)
+    shell_command_tool = create_shell_command_tool(shell_commander)
 
     rag_agent = create_rag_orchestrator(
         tools=[

@@ -63,9 +63,13 @@ def create_enhanced_semantic_search_tool(repo_path: str | None = None, console: 
         
         try:
             # Use async version since we're in an async context
-            from .semantic_search import semantic_code_search_async
-            results = await semantic_code_search_async(query, top_k)
+            from .semantic_search import semantic_code_search_outcome_async
+            outcome = await semantic_code_search_outcome_async(query, top_k)
             
+            if outcome.status != "ok":
+                return f"❌ {outcome.message}"
+            
+            results = outcome.matches
             if not results:
                 return (
                     f"❌ No semantic matches found for: '{query}'\n\n"

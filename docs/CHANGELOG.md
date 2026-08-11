@@ -1,5 +1,22 @@
 # Changelog
 
+## 2026-08-11
+
+### IMPROVEMENT_MCP items 1-4, 6-8 (all remaining, item 5 dismissed) ✅
+- **Item 1 — Read-only agent for `query_codebase`** — `initialize_services_and_agent(..., read_only=True)` excludes the mutation-capable tools (`file_writer`, `file_editor`, `shell_command`) and uses the new `RAG_READ_ONLY_SYSTEM_PROMPT`; `query_codebase` now runs read-only while `optimize_code` and the CLI loops keep the full tool set.
+- **Item 2 — Explicit tool-selection rules** — both orchestrator prompts now carry a `TOOL SELECTION RULES` block: graph tool for structural facts, semantic tools for intent discovery, `get_source_by_id`/file readers after semantic matches, and graph follow-up via qualified names/IDs.
+- **Item 3 — Prompt tool-name alignment** — replaced the stale `semantic_code_search` references with the actual registered tool names (`semantic_search_by_intent`, `semantic_search_functions`, `get_source_by_id`).
+- **Item 4 — Evidence-backed answers** — prompts now require a source reference (repo-relative path, qualified symbol, line range) for every implementation claim and forbid inferring behavior from names/scores alone.
+- **Item 6 — Structured MCP response** — `query_codebase` now returns `sources[]` (qualified_name/filename/start_line/end_line, deduplicated from `GraphData` rows and `CodeSnippet` returns) plus a `retrieval` block (`used_graph`, `used_semantic_search`, `index_status` fresh/stale/no_metadata); output schema updated.
+- **Item 7 — Semantic-search failures distinguishable** — new `SemanticSearchOutcome` (`status` in `ok`/`no_match`/`no_dependencies`/`failed`, `matches`, `message`) exposed via `semantic_code_search_outcome[_async]`; the old list-returning functions still work. `semantic_search_functions` and `semantic_search_by_intent` now report the actual failure condition instead of a generic "no matches". Prompts tell the model to report no-match vs infra failure distinctly.
+- **Item 8 — Bounded Cypher traversal & LIMITs** — both Cypher prompts now mandate a `LIMIT` on every query, forbid unbounded variable-length paths (`[*]`, `[*0..]`), and require bounded depths (`[*..3]`) unless arbitrary reachability is explicitly requested.
+- **Tests** — new `codebase_rag/tests/test_runtime.py` (read-only vs full tool sets, read-only prompt), `codebase_rag/tests/test_semantic_search.py` (outcome statuses), plus updated `test_mcp_server.py` (schema, response contract, metadata extraction, read_only flag).
+
+### Prompt/Docs Alignment Follow-up ✅
+- **Prompt retrieval-rule consistency** — adjusted both orchestrator prompts so semantic-first guidance applies to intent questions without concrete symbol/file names, matching the explicit tool-selection rules for structural graph queries.
+- **Prompt tool-name cleanup** — replaced stale `edit_existing_file` mention with the actual modifying tool `replace_code_surgically`.
+- **IMPROVEMENT_MCP contract update** — updated the early `query_codebase` response example and response-contract section text to reflect the implemented `sources[]` and `retrieval` fields.
+
 ## 2026-08-09
 
 ### Control Panel: Quick Semantic Retrieval Debug Panel ✅

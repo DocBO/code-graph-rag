@@ -1,4 +1,6 @@
 # codebase_rag/tools/semantic_search.py
+from dataclasses import dataclass
+from enum import Enum
 from pathlib import Path
 from typing import Any
 
@@ -10,6 +12,24 @@ from ..utils.dependencies import has_semantic_dependencies
 _repo_path_context: str | None = None
 
 
+class SemanticSearchStatus(str, Enum):
+    """Distinguishes why a semantic search returned no results."""
+
+    OK = "ok"
+    NO_MATCH = "no_match"
+    NO_DEPENDENCIES = "no_dependencies"
+    FAILED = "failed"
+
+
+@dataclass
+class SemanticSearchOutcome:
+    """Result of a semantic search, including the failure condition."""
+
+    status: SemanticSearchStatus
+    matches: list[dict[str, Any]]
+    message: str
+
+
 def _normalize_repo_path(repo_path: str | None) -> str | None:
     if repo_path is None:
         return None
@@ -19,23 +39,48 @@ def semantic_code_search(query: str, top_k: int = 5, repo_path: str | None = Non
     """
     Synchronous version of semantic search.
     Use this when calling from sync contexts.
+
+    Returns an empty list both when there is no match and when the search
+    infrastructure failed. Use ``semantic_code_search_outcome`` if you need to
+    distinguish the two.
+    """
+    return semantic_code_search_outcome(query, top_k, repo_path).matches
+
+
+def semantic_code_search_outcome(
+    query: str, top_k: int = 5, repo_path: str | None = None
+) -> SemanticSearchOutcome:
+    """
+    Synchronous semantic search that reports why no results were returned.
+
+    Returns an outcome with a status distinguishing:
+    - ``NO_MATCH``: the search ran but found nothing similar
+    - ``NO_DEPENDENCIES``: the ``semantic`` extra is not installed
+    - ``FAILED``: an infrastructure or query error occurred
     """
     if not has_semantic_dependencies():
         logger.warning("Semantic search requires 'semantic' extra: uv sync --extra semantic")
-        return []
-    
+        return SemanticSearchOutcome(
+            status=SemanticSearchStatus.NO_DEPENDENCIES,
+            matches=[],
+            message=(
+                "Semantic search is unavailable: the 'semantic' extra is not installed. "
+                "Run `uv sync --extra semantic`."
+            ),
+        )
+
     # Use provided repo_path, fall back to context, then to settings
     effective_repo_path = _normalize_repo_path(repo_path or _repo_path_context)
-    
+
     try:
         from ..embedder import embed_code
         from ..vector_store import search_embedding_matches
         from ..services.graph_service import execute_read_query
         from ..config import settings
-        
+
         # Generate embedding for the query
         query_embedding = embed_code(query)
-        
+
         # Search for similar embeddings and keep chunk payload metadata.
         # Pass repo_path to search repo-specific collection
         search_results = search_embedding_matches(
@@ -43,14 +88,22 @@ def semantic_code_search(query: str, top_k: int = 5, repo_path: str | None = Non
             top_k=top_k,
             repo_path=effective_repo_path,
         )
-        
+
         if not search_results:
             logger.info(f"No semantic matches found for query: {query}")
-            return []
-        
+            return SemanticSearchOutcome(
+                status=SemanticSearchStatus.NO_MATCH,
+                matches=[],
+                message=(
+                    "No semantic matches found for the query. This means the vector "
+                    "search returned no similar results; embeddings may not have been "
+                    "generated for this repository yet."
+                ),
+            )
+
         # Extract node_ids for database query
         node_ids = [int(hit["node_id"]) for hit in search_results if hit.get("node_id") is not None]
-        
+
         # Query Memgraph for node details using read-only helper (no context manager)
         # Build the query with repo_path filter
         placeholders = ", ".join(f"${i}" for i in range(len(node_ids)))
@@ -61,20 +114,20 @@ def semantic_code_search(query: str, top_k: int = 5, repo_path: str | None = Non
                labels(n) AS type, n.name AS name
         ORDER BY n.qualified_name
         """
-        
+
         params = {str(i): node_id for i, node_id in enumerate(node_ids)}
         params["repo_path"] = effective_repo_path or "."
-        
+
         results = execute_read_query(
             host=settings.MEMGRAPH_HOST,
             port=settings.MEMGRAPH_PORT,
             query=cypher_query,
             params=params
         )
-        
+
         # Create O(1) lookup map for graph results
         results_map = {res["node_id"]: res for res in results}
-        
+
         # Format results and preserve search order with real similarity scores
         formatted_results = []
         for hit in search_results:  # Preserve order from vector search
@@ -91,13 +144,21 @@ def semantic_code_search(query: str, top_k: int = 5, repo_path: str | None = Non
                     "matched_chunk_qualified_name": hit.get("matched_qualified_name"),
                     "chunk_text": hit.get("chunk_text"),
                 })
-        
+
         logger.info(f"Found {len(formatted_results)} semantic matches for: {query}")
-        return formatted_results
-            
+        return SemanticSearchOutcome(
+            status=SemanticSearchStatus.OK,
+            matches=formatted_results,
+            message=f"Found {len(formatted_results)} semantic matches.",
+        )
+
     except Exception as e:
         logger.error(f"Semantic search failed for query '{query}': {e}")
-        return []
+        return SemanticSearchOutcome(
+            status=SemanticSearchStatus.FAILED,
+            matches=[],
+            message=f"Semantic search failed: {e}",
+        )
 
 
 async def semantic_code_search_async(query: str, top_k: int = 5, repo_path: str | None = None) -> list[dict[str, Any]]:
@@ -119,23 +180,48 @@ async def semantic_code_search_async(query: str, top_k: int = 5, repo_path: str 
                 "score": float
             }
         ]
+
+    Returns an empty list both when there is no match and when the search
+    infrastructure failed. Use ``semantic_code_search_outcome_async`` if you
+    need to distinguish the two.
+    """
+    return (await semantic_code_search_outcome_async(query, top_k, repo_path)).matches
+
+
+async def semantic_code_search_outcome_async(
+    query: str, top_k: int = 5, repo_path: str | None = None
+) -> SemanticSearchOutcome:
+    """
+    Async semantic search that reports why no results were returned.
+
+    Returns an outcome with a status distinguishing:
+    - ``NO_MATCH``: the search ran but found nothing similar
+    - ``NO_DEPENDENCIES``: the ``semantic`` extra is not installed
+    - ``FAILED``: an infrastructure or query error occurred
     """
     if not has_semantic_dependencies():
         logger.warning("Semantic search requires 'semantic' extra: uv sync --extra semantic")
-        return []
-    
+        return SemanticSearchOutcome(
+            status=SemanticSearchStatus.NO_DEPENDENCIES,
+            matches=[],
+            message=(
+                "Semantic search is unavailable: the 'semantic' extra is not installed. "
+                "Run `uv sync --extra semantic`."
+            ),
+        )
+
     try:
         from ..embedder import embed_code_async
         from ..vector_store import search_embedding_matches
         from ..services.graph_service import execute_read_query
         from ..config import settings
-        
+
         # Fallback chain: parameter > context > env var
         effective_repo_path = _normalize_repo_path(repo_path or _repo_path_context)
-        
+
         # Generate embedding for the query
         query_embedding = await embed_code_async(query)
-        
+
         # Search for similar embeddings and keep chunk payload metadata.
         # Pass repo_path to search repo-specific collection
         search_results = search_embedding_matches(
@@ -143,14 +229,22 @@ async def semantic_code_search_async(query: str, top_k: int = 5, repo_path: str 
             top_k=top_k,
             repo_path=effective_repo_path,
         )
-        
+
         if not search_results:
             logger.info(f"No semantic matches found for query: {query}")
-            return []
-        
+            return SemanticSearchOutcome(
+                status=SemanticSearchStatus.NO_MATCH,
+                matches=[],
+                message=(
+                    "No semantic matches found for the query. This means the vector "
+                    "search returned no similar results; embeddings may not have been "
+                    "generated for this repository yet."
+                ),
+            )
+
         # Extract node_ids for database query
         node_ids = [int(hit["node_id"]) for hit in search_results if hit.get("node_id") is not None]
-        
+
         # Query Memgraph for node details using read-only helper (no context manager)
         # Build the query with repo_path filter
         placeholders = ", ".join(f"${i}" for i in range(len(node_ids)))
@@ -161,20 +255,20 @@ async def semantic_code_search_async(query: str, top_k: int = 5, repo_path: str 
                labels(n) AS type, n.name AS name
         ORDER BY n.qualified_name
         """
-        
+
         params = {str(i): node_id for i, node_id in enumerate(node_ids)}
         params["repo_path"] = effective_repo_path or "."
-        
+
         results = execute_read_query(
             host=settings.MEMGRAPH_HOST,
             port=settings.MEMGRAPH_PORT,
             query=cypher_query,
             params=params
         )
-        
+
         # Create O(1) lookup map for graph results
         results_map = {res["node_id"]: res for res in results}
-        
+
         # Format results and preserve search order with real similarity scores
         formatted_results = []
         for hit in search_results:  # Preserve order from vector search
@@ -191,13 +285,21 @@ async def semantic_code_search_async(query: str, top_k: int = 5, repo_path: str 
                     "matched_chunk_qualified_name": hit.get("matched_qualified_name"),
                     "chunk_text": hit.get("chunk_text"),
                 })
-        
+
         logger.info(f"Found {len(formatted_results)} semantic matches for: {query}")
-        return formatted_results
-            
+        return SemanticSearchOutcome(
+            status=SemanticSearchStatus.OK,
+            matches=formatted_results,
+            message=f"Found {len(formatted_results)} semantic matches.",
+        )
+
     except Exception as e:
         logger.error(f"Semantic search failed for query '{query}': {e}")
-        return []
+        return SemanticSearchOutcome(
+            status=SemanticSearchStatus.FAILED,
+            matches=[],
+            message=f"Semantic search failed: {e}",
+        )
 
 
 def get_function_source_code(node_id: int, repo_path: str | None = None) -> str | None:
@@ -287,10 +389,19 @@ def create_semantic_search_tool(repo_path: str | None = None) -> Tool:
         
         # Use async version since we're in an async context (pydantic_ai tool)
         # _repo_path_context is set by the tool creator and will be used in the function
-        results = await semantic_code_search_async(query, top_k)
+        outcome = await semantic_code_search_outcome_async(query, top_k)
         
+        if outcome.status != SemanticSearchStatus.OK:
+            return outcome.message
+        
+        results = outcome.matches
         if not results:
-            return f"No semantic matches found for query: '{query}'. This could mean:\n1. No functions match this description\n2. Semantic search dependencies are not installed\n3. No embeddings have been generated yet"
+            return (
+                f"No semantic matches found for query: '{query}'.\n\n"
+                "This could mean no functions match this description or no embeddings "
+                "have been generated yet. Run `graph-code start --repo-path <repo> "
+                "--update-graph` to generate embeddings during ingestion."
+            )
         
         # Format results for LLM consumption
         formatted_results = []

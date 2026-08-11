@@ -97,13 +97,22 @@ export function mcpLogs(limit = 250): Promise<string[]> {
 export interface QueryResult {
   repo_path: string
   question: string
+  search_depth: 'shallow' | 'normal' | 'deep'
   response: string
 }
 
-export function runQuery(repoPath: string, question: string): Promise<QueryResult> {
+export function runQuery(
+  repoPath: string,
+  question: string,
+  searchDepth: 'shallow' | 'normal' | 'deep' = 'normal',
+): Promise<QueryResult> {
   return req('/query', {
     method: 'POST',
-    body: JSON.stringify({ repo_path: repoPath, question }),
+    body: JSON.stringify({
+      repo_path: repoPath,
+      question,
+      search_depth: searchDepth,
+    }),
   })
 }
 

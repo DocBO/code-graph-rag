@@ -17,6 +17,7 @@ import type { RepoInfo, SemanticResult, StatusResponse } from './types'
 import Markdown from './Markdown'
 
 type LampTone = 'off' | 'ok' | 'busy' | 'err'
+type QueryDepth = 'shallow' | 'normal' | 'deep'
 
 function lampTone(state: string): LampTone {
   switch (state) {
@@ -193,6 +194,8 @@ function QueryPanel({
 }) {
   const [repoPath, setRepoPath] = useState(defaultRepo)
   const [question, setQuestion] = useState('')
+  const [searchDepth, setSearchDepth] = useState<QueryDepth>('normal')
+  const [resultDepth, setResultDepth] = useState<QueryDepth>('normal')
   const [result, setResult] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -210,8 +213,9 @@ function QueryPanel({
     setError(null)
     setResult(null)
     try {
-      const res = await runQuery(repoPath, question.trim())
+      const res = await runQuery(repoPath, question.trim(), searchDepth)
       setResult(res.response)
+      setResultDepth(res.search_depth)
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
     } finally {
@@ -272,13 +276,28 @@ function QueryPanel({
           }}
           disabled={busy}
         />
-        <button
-          className="btn btn-start query-submit"
-          onClick={submit}
-          disabled={busy || !repoPath || !question.trim()}
-        >
-          {busy ? 'Querying…' : 'Run query'}
-        </button>
+        <div className="query-controls">
+          <label className="input-num">
+            <span className="meta-k">DEPTH</span>
+            <select
+              className="input"
+              value={searchDepth}
+              onChange={(e) => setSearchDepth(e.target.value as QueryDepth)}
+              disabled={busy}
+            >
+              <option value="shallow">shallow</option>
+              <option value="normal">normal</option>
+              <option value="deep">deep</option>
+            </select>
+          </label>
+          <button
+            className="btn btn-start query-submit"
+            onClick={submit}
+            disabled={busy || !repoPath || !question.trim()}
+          >
+            {busy ? 'Querying…' : 'Run query'}
+          </button>
+        </div>
       </div>
 
       {error && <div className="card-error">{error}</div>}
@@ -286,7 +305,7 @@ function QueryPanel({
       {result && (
         <div className="query-result">
           <div className="query-result-head">
-            <span className="meta-k">RESULT — {repoPath}</span>
+            <span className="meta-k">RESULT — {repoPath} — {resultDepth}</span>
             <button className="btn btn-ghost" onClick={copy}>
               {copied ? '✓ Copied' : 'Copy'}
             </button>

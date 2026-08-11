@@ -59,8 +59,8 @@ The dashboard polls `/api/status` every 2.5 s and shows:
 - last-update time and duration, per-repo log tails, and MCP server state
 
 A **Query Codebase (RAG)** card runs `query_codebase` against a selected repo:
-pick the repo, type a question, and the agent's markdown answer is rendered in
-place with a **Copy** button.
+pick the repo, choose depth (`shallow`/`normal`/`deep`), type a question, and
+the agent's markdown answer is rendered in place with a **Copy** button.
 
 ## API
 
@@ -77,6 +77,9 @@ place with a **Copy** button.
 | POST   | `/api/mcp/stop`                   | Stop the MCP server                  |
 | GET    | `/api/mcp/logs`                   | MCP server log tail                  |
 | POST   | `/api/query`                      | Run `query_codebase` RAG on a repo   |
+
+`POST /api/query` accepts `repo_path`, `question`, and optional
+`search_depth` (`shallow`/`normal`/`deep`, default `normal`).
 
 `{path}` is the URL-encoded absolute repo path.
 

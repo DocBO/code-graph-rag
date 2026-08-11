@@ -516,3 +516,15 @@ I would prioritize these changes:
 8. **Add bounded graph traversal and mandatory result limits to the Cypher guidance.** ✅ Implemented 2026-08-11 — Cypher prompts mandate `LIMIT` on every query, forbid unbounded variable-length paths, and require bounded depths unless arbitrary reachability is requested.
 
 The current architecture already supports hybrid retrieval; the main weaknesses are that the orchestration decision is left largely to the model, the query endpoint has more privileges than its name suggests, and the prompt terminology does not consistently match the actual MCP and internal tool names.
+
+---
+
+## Follow-up: Agent Search Depth Modes (Implemented 2026-08-11)
+
+To tune speed vs. investigation breadth in the agentic path, `query_codebase` now accepts:
+
+- `search_depth: "shallow"` — minimal, fast retrieval.
+- `search_depth: "normal"` — balanced retrieval (default).
+- `search_depth: "deep"` — broader multi-step retrieval with richer evidence.
+
+`quick_semantic_retrieval` remains non-agentic and continues to be tuned via `top_n`.

@@ -109,14 +109,25 @@ class StubContext:
         }
 
     async def query_codebase(
-        self, question: str, repo_path: str | None = None
+        self,
+        question: str,
+        repo_path: str | None = None,
+        search_depth: str = "normal",
     ) -> dict[str, object]:
         self.calls.append(
-            ("query_codebase", {"question": question, "repo_path": repo_path})
+            (
+                "query_codebase",
+                {
+                    "question": question,
+                    "repo_path": repo_path,
+                    "search_depth": search_depth,
+                },
+            )
         )
         return {
             "repo_path": repo_path or "/workspace",
             "question": question,
+            "search_depth": search_depth,
             "response": "Standard agent response",
             "sources": [],
             "retrieval": {
@@ -196,6 +207,7 @@ def test_mcp_server_lists_tools_and_invokes_them() -> None:
                     "get_status",
                     "ingest_status",
                     "query_codebase",
+                    "query_codegraph",
                     "quick_semantic_retrieval",
                     "start_updater",
                 }.issubset(tool_names)
@@ -206,11 +218,13 @@ def test_mcp_server_lists_tools_and_invokes_them() -> None:
                 assert query_codebase_tool.inputSchema["required"] == ["question"]
                 assert set(query_codebase_tool.inputSchema["properties"]) == {
                     "question",
+                    "search_depth",
                     "repo_path",
                 }
                 assert set(query_codebase_tool.outputSchema["properties"]) == {
                     "repo_path",
                     "question",
+                    "search_depth",
                     "response",
                     "sources",
                     "retrieval",
@@ -275,6 +289,7 @@ def test_mcp_server_lists_tools_and_invokes_them() -> None:
                 assert codebase_result.structuredContent == {
                     "repo_path": "/workspace",
                     "question": "How is the frontend rendered?",
+                    "search_depth": "normal",
                     "response": "Standard agent response",
                     "sources": [],
                     "retrieval": {
@@ -292,6 +307,26 @@ def test_mcp_server_lists_tools_and_invokes_them() -> None:
                     },
                 )
                 assert removed_strategy_result.isError
+
+                deep_codebase_result = await session.call_tool(
+                    "query_codebase",
+                    {
+                        "question": "Trace startup flow",
+                        "search_depth": "deep",
+                    },
+                )
+                assert not deep_codebase_result.isError
+                assert deep_codebase_result.structuredContent["search_depth"] == "deep"
+
+                alias_result = await session.call_tool(
+                    "query_codegraph",
+                    {
+                        "question": "Trace startup flow",
+                        "search_depth": "shallow",
+                    },
+                )
+                assert not alias_result.isError
+                assert alias_result.structuredContent["search_depth"] == "shallow"
 
                 quick_semantic_result = await session.call_tool(
                     "quick_semantic_retrieval",
@@ -336,7 +371,19 @@ def test_mcp_server_lists_tools_and_invokes_them() -> None:
     assert any(call[0] == "optimize" for call in context.calls)
     assert (
         "query_codebase",
-        {"question": "How is the frontend rendered?", "repo_path": None},
+        {
+            "question": "How is the frontend rendered?",
+            "repo_path": None,
+            "search_depth": "normal",
+        },
+    ) in context.calls
+    assert (
+        "query_codebase",
+        {
+            "question": "Trace startup flow",
+            "repo_path": None,
+            "search_depth": "deep",
+        },
     ) in context.calls
     assert (
         "quick_semantic_retrieval",
@@ -404,13 +451,17 @@ async def test_mcp_context_query_uses_standard_agent(
     )
 
     context = GraphCodeMCPContext(str(tmp_path), batch_size=25)
-    result = await context.query_codebase("Explain the checkout frontend")
+    result = await context.query_codebase(
+        "Explain the checkout frontend", search_depth="deep"
+    )
 
-    assert captured["prompt"] == "Explain the checkout frontend"
+    assert "SEARCH DEPTH MODE: DEEP" in str(captured["prompt"])
+    assert "Explain the checkout frontend" in str(captured["prompt"])
     assert captured["repo_path"] == str(tmp_path.resolve())
     assert captured["read_only"] is True
     assert result["repo_path"] == str(tmp_path.resolve())
     assert result["question"] == "Explain the checkout frontend"
+    assert result["search_depth"] == "deep"
     assert result["response"] == "Standard answer"
     assert result["sources"] == []
     assert result["retrieval"] == {
@@ -418,6 +469,16 @@ async def test_mcp_context_query_uses_standard_agent(
         "used_semantic_search": False,
         "index_status": "fresh",
     }
+
+
+@pytest.mark.asyncio
+async def test_mcp_context_query_rejects_invalid_search_depth(
+    tmp_path: Path,
+) -> None:
+    context = GraphCodeMCPContext(str(tmp_path), batch_size=25)
+
+    with pytest.raises(ValueError, match="search_depth must be one of"):
+        await context.query_codebase("Explain config loading", search_depth="ultra")
 
 
 @pytest.mark.asyncio

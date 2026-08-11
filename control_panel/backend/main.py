@@ -21,7 +21,7 @@ import threading
 import time
 from collections import deque
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import uvicorn
 from fastapi import FastAPI, HTTPException
@@ -100,6 +100,7 @@ class McpStartRequest(BaseModel):
 class QueryRequest(BaseModel):
     repo_path: str
     question: str
+    search_depth: Literal["shallow", "normal", "deep"] = "normal"
 
 
 class SemanticSearchRequest(BaseModel):
@@ -1006,10 +1007,16 @@ def run_query(req: QueryRequest) -> dict[str, Any]:
             repo_path=str(Path(req.repo_path).expanduser().resolve()),
             batch_size=DEFAULT_BATCH_SIZE,
         )
-        result = asyncio.run(context.query_codebase(question=req.question))
+        result = asyncio.run(
+            context.query_codebase(
+                question=req.question,
+                search_depth=req.search_depth,
+            )
+        )
         return {
             "repo_path": result.get("repo_path", req.repo_path),
             "question": req.question,
+            "search_depth": result.get("search_depth", req.search_depth),
             "response": result.get("response", ""),
         }
     except HTTPException:

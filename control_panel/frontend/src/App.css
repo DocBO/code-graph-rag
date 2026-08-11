@@ -618,6 +618,12 @@ body::before {
   align-self: flex-end;
 }
 
+.query-controls {
+  display: flex;
+  align-items: flex-end;
+  gap: 10px;
+}
+
 .query-result {
   margin-top: 14px;
   border: 1px solid var(--line);

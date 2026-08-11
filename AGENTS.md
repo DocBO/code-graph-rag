@@ -24,6 +24,7 @@ Core logic lives in `codebase_rag/`, with parsers in `codebase_rag/parsers`, pro
 
 ## Build, Test, and Development Commands
 Run `uv sync` for Python-only work or `uv sync --extra treesitter-full` (same as `make install`) for multi-language parsing. `make dev` adds dev/test extras and installs hooks, while `make all` bootstraps everything plus a verification test run. Start Memgraph with `docker-compose up -d` before invoking `python -m codebase_rag.main start --repo-path /path/to/repo`. Use `make test` for the standard pytest pass or `make test-parallel` to accelerate with xdist.
+For MCP query tuning, call `query_codebase` with optional `search_depth` set to `shallow`, `normal`, or `deep` (example: `{ "question": "trace startup", "search_depth": "deep", "repo_path": "/abs/repo" }`).
 
 ## Coding Style & Naming Conventions
 Target Python 3.12 with four-space indentation and snake_case modules/functions; reserve PascalCase for classes and keep Typer command names lowercase. Ruff enforces linting (line length 88, double quotes), so rely on `uv run ruff check .` and `uv run ruff format .` for consistency. Type hints are expected for new public APIs—validate with `uv run mypy codebase_rag` and finish with `pre-commit run --all-files` before pushing.

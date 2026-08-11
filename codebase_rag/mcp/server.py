@@ -32,6 +32,7 @@ from ..utils.chunking import chunk_boundaries
 
 _GRAPH_TOOLS = {"query_codebase_knowledge_graph"}
 _SEMANTIC_TOOLS = {"semantic_search_by_intent", "semantic_search_functions"}
+_AGENT_DEPTH_MODES = {"shallow", "normal", "deep"}
 
 
 def _extract_retrieval_metadata(messages: list[Any]) -> dict[str, Any]:
@@ -179,13 +180,19 @@ def _build_tool_schema(name: str) -> dict[str, Any]:
                 },
                 "additionalProperties": False,
             }
-        case "query_codebase":
+        case "query_codebase" | "query_codegraph":
             return {
                 "type": "object",
                 "properties": {
                     "question": {
                         "type": "string",
                         "description": "Natural language question about the codebase.",
+                    },
+                    "search_depth": {
+                        "type": "string",
+                        "enum": ["shallow", "normal", "deep"],
+                        "default": "normal",
+                        "description": "Agent search depth: shallow (fast/minimal retrieval), normal (balanced), deep (broader multi-step retrieval).",
                     },
                     "repo_path": {
                         "type": "string",
@@ -535,12 +542,20 @@ class GraphCodeMCPContext:
         return watched
 
     async def query_codebase(
-        self, question: str, repo_path: str | None = None
+        self,
+        question: str,
+        repo_path: str | None = None,
+        search_depth: str = "normal",
     ) -> dict[str, Any]:
         """Query the codebase using the standard agent search/answer flow."""
 
         if not question.strip():
             raise ValueError("question must not be empty")
+
+        depth = search_depth.strip().lower()
+        if depth not in _AGENT_DEPTH_MODES:
+            allowed = ", ".join(sorted(_AGENT_DEPTH_MODES))
+            raise ValueError(f"search_depth must be one of: {allowed}")
 
         target_repo = self._resolve_repo(repo_path)
         with MemgraphIngestor(
@@ -552,7 +567,9 @@ class GraphCodeMCPContext:
             rag_agent = initialize_services_and_agent(
                 str(target_repo), ingestor, read_only=True
             )
-            response = await rag_agent.run(question)
+            response = await rag_agent.run(
+                f"{self._depth_directive(depth)}\n\nUser question:\n{question}"
+            )
 
         retrieval = _extract_retrieval_metadata(response.all_messages())
         last_ingest, changes, _ = summarize_ingest_status(target_repo)
@@ -566,6 +583,7 @@ class GraphCodeMCPContext:
         return {
             "repo_path": str(target_repo),
             "question": question,
+            "search_depth": depth,
             "response": response.output,
             "sources": retrieval["sources"],
             "retrieval": {
@@ -574,6 +592,23 @@ class GraphCodeMCPContext:
                 "index_status": index_status,
             },
         }
+
+    @staticmethod
+    def _depth_directive(depth: str) -> str:
+        if depth == "shallow":
+            return (
+                "SEARCH DEPTH MODE: SHALLOW. Prefer minimal, high-signal retrieval "
+                "(few tool calls, concise evidence) and return a short answer with key references."
+            )
+        if depth == "deep":
+            return (
+                "SEARCH DEPTH MODE: DEEP. Perform broader multi-step retrieval across semantic, "
+                "graph, and source tools before concluding; include richer cross-file evidence."
+            )
+        return (
+            "SEARCH DEPTH MODE: NORMAL. Use a balanced retrieval strategy with enough evidence "
+            "to answer confidently without exhaustive exploration."
+        )
 
     async def quick_semantic_retrieval(
         self,
@@ -815,13 +850,14 @@ class GraphCodeMCPServer:
             types.Tool(
                 name="query_codebase",
                 title="Query Codebase (RAG)",
-                description="Query the codebase using the standard agent search and answer flow.",
+                description="Query the codebase using the standard agent search and answer flow, with tunable search depth.",
                 inputSchema=_build_tool_schema("query_codebase"),
                 outputSchema={
                     "type": "object",
                     "properties": {
                         "repo_path": {"type": "string"},
                         "question": {"type": "string"},
+                        "search_depth": {"type": "string"},
                         "response": {"type": "string"},
                         "sources": {
                             "type": "array",
@@ -847,6 +883,50 @@ class GraphCodeMCPServer:
                     "required": [
                         "repo_path",
                         "question",
+                        "search_depth",
+                        "response",
+                        "sources",
+                        "retrieval",
+                    ],
+                },
+            ),
+            types.Tool(
+                name="query_codegraph",
+                title="Query Codegraph (Compatibility Alias)",
+                description="Compatibility alias for query_codebase. Uses the same agentic query flow and schema.",
+                inputSchema=_build_tool_schema("query_codegraph"),
+                outputSchema={
+                    "type": "object",
+                    "properties": {
+                        "repo_path": {"type": "string"},
+                        "question": {"type": "string"},
+                        "search_depth": {"type": "string"},
+                        "response": {"type": "string"},
+                        "sources": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "qualified_name": {"type": ["string", "null"]},
+                                    "filename": {"type": ["string", "null"]},
+                                    "start_line": {"type": ["integer", "null"]},
+                                    "end_line": {"type": ["integer", "null"]},
+                                },
+                            },
+                        },
+                        "retrieval": {
+                            "type": "object",
+                            "properties": {
+                                "used_graph": {"type": "boolean"},
+                                "used_semantic_search": {"type": "boolean"},
+                                "index_status": {"type": "string"},
+                            },
+                        },
+                    },
+                    "required": [
+                        "repo_path",
+                        "question",
+                        "search_depth",
                         "response",
                         "sources",
                         "retrieval",
@@ -1008,10 +1088,11 @@ class GraphCodeMCPServer:
                 )
                 return self._format_response(result, message)
 
-            if tool_name == "query_codebase":
+            if tool_name in {"query_codebase", "query_codegraph"}:
                 result = await self.context.query_codebase(
                     question=args.get("question", ""),
                     repo_path=args.get("repo_path"),
+                    search_depth=args.get("search_depth", "normal"),
                 )
                 return self._format_response(result, result["response"])
 

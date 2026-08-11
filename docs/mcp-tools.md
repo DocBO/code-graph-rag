@@ -28,12 +28,19 @@ All tool responses include `repo_path` so clients can always see which repositor
 
 **Parameters:**
 - `question` (string, required): Question about codebase functionality/implementation.
+- `search_depth` (string, optional): Agent retrieval depth. Allowed values: `shallow`, `normal`, `deep` (default: `normal`).
+  - `shallow`: fast, minimal retrieval for quick answers.
+  - `normal`: balanced retrieval for most use cases.
+  - `deep`: broader multi-step retrieval across semantic, graph, and source evidence.
 - `repo_path` (string, optional): Repository path override. Defaults to the server's configured repository.
 
 **Returns:**
-- `repo_path`, `question`, `response` (string: synthesized answer)
+- `repo_path`, `question`, `search_depth`, `response` (string: synthesized answer), `sources[]`, `retrieval`
+- `retrieval` includes: `used_graph`, `used_semantic_search`, `index_status` (`fresh`/`stale`/`no_metadata`)
 
 **Example:** \"How does user authentication work?\"
+
+Compatibility: `query_codegraph` is supported as an alias with the same request/response schema.
 
 
 ### 3. `get_status`

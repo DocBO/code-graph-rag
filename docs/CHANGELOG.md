@@ -2,6 +2,24 @@
 
 ## 2026-08-11
 
+### MCP Compatibility: `query_codegraph` Alias + HTTP Error Mitigation ✅
+- **Added `query_codegraph` MCP alias tool** — forwards to `query_codebase` with identical schema (`question`, optional `repo_path`, optional `search_depth`) and response contract.
+- **Why** — some clients requested `query_codegraph` and failed at runtime; alias support avoids hard failures from legacy/typo tool naming.
+- **Observed runtime condition** — control panel status showed MCP HTTP endpoint unavailable (`state=error`, `adopted process exited unexpectedly`, `127.0.0.1:8765` connection refused), which can independently surface as HTTP MCP errors.
+
+### Control Panel: Query Depth Qualifier in Dashboard ✅
+- **Added depth selector to Query Codebase card** — dashboard query UI now includes `search_depth` (`shallow`/`normal`/`deep`) and forwards it to backend `/api/query`.
+- **Backend `/api/query` accepts depth qualifier** — `QueryRequest` now supports `search_depth` (default `normal`) and passes it to `GraphCodeMCPContext.query_codebase`.
+- **Response parity** — `/api/query` now returns the effective `search_depth` along with `repo_path`, `question`, and `response`.
+- **Docs updated** — `control_panel/README.md` usage/API section documents the new dashboard depth qualifier.
+
+### MCP: Agent Search Depth for `query_codebase` ✅
+- **Added `search_depth` parameter** to `query_codebase` with three modes: `shallow`, `normal` (default), and `deep`.
+- **Depth-aware agent execution** — MCP now injects an explicit retrieval-depth directive into the read-only agent run so clients can tune speed vs. thoroughness.
+- **Response contract extended** — `query_codebase` responses now include the effective `search_depth` used for the run.
+- **Validation** — invalid values are rejected with a clear error listing allowed modes.
+- **Tests/docs updated** — MCP schema/dispatch tests now cover `search_depth`; `docs/mcp-tools.md` updated with parameter and return fields.
+
 ### IMPROVEMENT_MCP items 1-4, 6-8 (all remaining, item 5 dismissed) ✅
 - **Item 1 — Read-only agent for `query_codebase`** — `initialize_services_and_agent(..., read_only=True)` excludes the mutation-capable tools (`file_writer`, `file_editor`, `shell_command`) and uses the new `RAG_READ_ONLY_SYSTEM_PROMPT`; `query_codebase` now runs read-only while `optimize_code` and the CLI loops keep the full tool set.
 - **Item 2 — Explicit tool-selection rules** — both orchestrator prompts now carry a `TOOL SELECTION RULES` block: graph tool for structural facts, semantic tools for intent discovery, `get_source_by_id`/file readers after semantic matches, and graph follow-up via qualified names/IDs.

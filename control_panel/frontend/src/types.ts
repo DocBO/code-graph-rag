@@ -21,6 +21,11 @@ export interface RepoInfo {
 export interface McpStatus {
   pid: number | null
   state: 'stopped' | 'starting' | 'running' | 'stopping' | 'error'
+  activity: 'stopped' | 'starting' | 'running' | 'stopping' | 'error' | 'idle' | 'busy' | 'stalled'
+  active_requests: number
+  last_request_at: number | null
+  last_response_at: number | null
+  last_activity_at: number | null
   repo_path: string | null
   url: string
   last_error: string | null

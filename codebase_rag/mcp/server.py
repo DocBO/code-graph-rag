@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import itertools
 import json
+import time
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -96,27 +98,50 @@ def _extract_retrieval_metadata(messages: list[Any]) -> dict[str, Any]:
 class TransportLoggingMiddleware:
     """Tiny middleware to log incoming HTTP requests to the MCP endpoint."""
 
+    _request_seq = itertools.count(1)
+
     def __init__(self, app: Any):
         self.app = app
 
     async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
-        if scope.get("type") == "http":
-            method = scope.get("method", "UNKNOWN")
-            path = scope.get("path", "UNKNOWN")
-            query_string = scope.get("query_string", b"").decode("utf-8")
-            full_path = f"{path}?{query_string}" if query_string else path
+        if scope.get("type") != "http":
+            await self.app(scope, receive, send)
+            return
 
-            # Log basic request info
-            logger.info(f"[MCP HTTP] {method} {full_path}")
+        req_id = next(self._request_seq)
+        started_at = time.time()
+        method = scope.get("method", "UNKNOWN")
+        path = scope.get("path", "UNKNOWN")
+        query_string = scope.get("query_string", b"").decode("utf-8")
+        full_path = f"{path}?{query_string}" if query_string else path
+        logger.info(f"[MCP HTTP] REQ {req_id} START {method} {full_path}")
 
-            # Log headers for debugging 400 errors
-            headers = {
-                k.decode("utf-8"): v.decode("utf-8")
-                for k, v in scope.get("headers", [])
-            }
-            logger.debug(f"[MCP HTTP] Headers: {headers}")
+        headers = {
+            k.decode("utf-8"): v.decode("utf-8") for k, v in scope.get("headers", [])
+        }
+        logger.debug(f"[MCP HTTP] Headers: {headers}")
 
-        await self.app(scope, receive, send)
+        status_code: int | None = None
+
+        async def wrapped_send(message: dict[str, Any]) -> None:
+            nonlocal status_code
+            if message.get("type") == "http.response.start":
+                status = message.get("status")
+                status_code = int(status) if isinstance(status, int) else None
+                if status_code is not None and status_code >= 400:
+                    logger.warning(f"[MCP HTTP] Response Status: {status_code}")
+            await send(message)
+
+        try:
+            await self.app(scope, receive, wrapped_send)
+        except Exception:
+            dur_ms = int((time.time() - started_at) * 1000)
+            logger.exception(f"[MCP HTTP] REQ {req_id} END ERROR dur_ms={dur_ms}")
+            raise
+
+        dur_ms = int((time.time() - started_at) * 1000)
+        final_status = status_code if status_code is not None else 0
+        logger.info(f"[MCP HTTP] REQ {req_id} END status={final_status} dur_ms={dur_ms}")
 
 
 def _build_tool_schema(name: str) -> dict[str, Any]:

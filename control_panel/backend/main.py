@@ -53,6 +53,7 @@ LOG_LIMIT = 400
 # dashboard stuck on "starting". Watchers use no timeout because a full-scan
 # watcher legitimately stays "starting" for the whole initial ingestion.
 MCP_START_TIMEOUT = float(os.environ.get("MCP_START_TIMEOUT", "120"))
+MCP_STALL_TIMEOUT = float(os.environ.get("MCP_STALL_TIMEOUT", "45"))
 
 app = FastAPI(title="Graph-Code RAG Control Panel")
 
@@ -160,6 +161,22 @@ class McpHandle:
         self.logs: deque[str] = deque(maxlen=LOG_LIMIT)
         self._reader: threading.Thread | None = None
         self._monitor: threading.Thread | None = None
+        self.active_requests = 0
+        self._active_request_ids: set[int] = set()
+        self.last_request_at: float | None = None
+        self.last_response_at: float | None = None
+        self.last_activity_at: float | None = None
+
+    def activity(self) -> str:
+        if self.state != "running":
+            return self.state
+        if self.active_requests <= 0:
+            return "idle"
+        now = time.time()
+        anchor = self.last_activity_at or self.last_request_at
+        if anchor is not None and now - anchor >= MCP_STALL_TIMEOUT:
+            return "stalled"
+        return "busy"
 
     def pid(self) -> int | None:
         if self.proc is not None:
@@ -174,6 +191,11 @@ class McpHandle:
             "url": f"http://{MCP_HOST}:{MCP_PORT}{MCP_PATH}",
             "last_error": self.last_error,
             "log_count": len(self.logs),
+            "activity": self.activity(),
+            "active_requests": self.active_requests,
+            "last_request_at": self.last_request_at,
+            "last_response_at": self.last_response_at,
+            "last_activity_at": self.last_activity_at,
         }
 
 
@@ -193,6 +215,10 @@ _UPDATE_END_PATTERNS = (
     re.compile(r"Completed semantic embedding generation"),
 )
 _UPDATE_FAIL_PATTERN = re.compile(r"Graph update failed")
+_MCP_REQ_START_PATTERN = re.compile(
+    r"\[MCP HTTP\] REQ (?P<id>\d+) START (?P<method>[A-Z]+) "
+)
+_MCP_REQ_END_PATTERN = re.compile(r"\[MCP HTTP\] REQ (?P<id>\d+) END ")
 
 
 def _classify_update_line(line: str) -> str | None:
@@ -204,6 +230,20 @@ def _classify_update_line(line: str) -> str | None:
     if any(p.search(line) for p in _UPDATE_END_PATTERNS):
         return "end"
     return None
+
+
+def _is_mcp_work_line(line: str) -> bool:
+    """Filter out keepalive/noise lines from MCP logs.
+
+    Streamable HTTP emits periodic ping lines that should not count as real
+    MCP work activity.
+    """
+    stripped = line.strip()
+    if not stripped:
+        return False
+    if "[MCP HTTP] Response Body: : ping" in stripped:
+        return False
+    return True
 
 
 class _LineReader(threading.Thread):
@@ -556,6 +596,11 @@ class RepoManager:
             self.mcp.last_error = None
             self.mcp.adopted_pid = mcp_groups[-1]
             self.mcp.state = "running"
+            self.mcp.active_requests = 0
+            self.mcp._active_request_ids.clear()
+            self.mcp.last_request_at = None
+            self.mcp.last_response_at = None
+            self.mcp.last_activity_at = None
             self.mcp.logs.append(
                 f"[mcp] adopted existing MCP server (pgid={mcp_groups[-1]}, "
                 f"stopped {len(mcp_groups) - 1} stale duplicate(s))"
@@ -660,14 +705,32 @@ class RepoManager:
                 raise HTTPException(404, f"Unknown repo: {path}")
             return cfg, (self._watchers.get(key) or WatcherHandle())
 
+    @staticmethod
+    def _last_ingest_timestamp(repo_path: str) -> float | None:
+        """Read the persisted last-ingest timestamp for restart-safe status."""
+        try:
+            from codebase_rag.ingest_metadata import read_ingest_metadata
+
+            metadata = read_ingest_metadata(Path(repo_path))
+            if metadata is None:
+                return None
+            return metadata.timestamp.timestamp()
+        except Exception:
+            return None
+
     def _repo_status(self, cfg: RepoConfig, handle: WatcherHandle) -> dict[str, Any]:
+        watcher_status = handle.status()
+        if watcher_status["last_update_at"] is None:
+            fallback_ts = self._last_ingest_timestamp(cfg.path)
+            if fallback_ts is not None:
+                watcher_status["last_update_at"] = fallback_ts
         return {
             "path": cfg.path,
             "name": Path(cfg.path).name or cfg.path,
             "debounce": cfg.debounce,
             "batch_size": cfg.batch_size,
             "no_update": cfg.no_update,
-            "watcher": handle.status(),
+            "watcher": watcher_status,
         }
 
     # -- watcher lifecycle ------------------------------------------------
@@ -883,6 +946,8 @@ class RepoManager:
             mcp.adopted_pid = None
             mcp.state = "stopped"
             stopped["mcp"] = True
+        mcp.active_requests = 0
+        mcp._active_request_ids.clear()
 
         return stopped
 
@@ -911,6 +976,32 @@ class RepoManager:
 
     def _tick_mcp(self, line: str) -> None:
         mcp = self.mcp
+        now = time.time()
+
+        start_match = _MCP_REQ_START_PATTERN.search(line)
+        if start_match:
+            method = start_match.group("method")
+            # Streamable HTTP keeps long-lived GET streams open. Track only
+            # mutation/query request methods for busy/stall activity.
+            if method in {"POST", "PUT", "PATCH", "DELETE"}:
+                req_id = int(start_match.group("id"))
+                mcp._active_request_ids.add(req_id)
+                mcp.active_requests = len(mcp._active_request_ids)
+                mcp.last_request_at = now
+                mcp.last_activity_at = now
+
+        end_match = _MCP_REQ_END_PATTERN.search(line)
+        if end_match:
+            req_id = int(end_match.group("id"))
+            if req_id in mcp._active_request_ids:
+                mcp._active_request_ids.remove(req_id)
+                mcp.active_requests = len(mcp._active_request_ids)
+            mcp.last_response_at = now
+            mcp.last_activity_at = now
+
+        if _is_mcp_work_line(line):
+            mcp.last_activity_at = now
+
         if mcp.state == "starting" and (
             "Uvicorn running on" in line or "Application startup complete" in line
         ):
@@ -1063,6 +1154,11 @@ def mcp_start(req: McpStartRequest) -> dict[str, Any]:
         mcp.last_error = None
         mcp.adopted_pid = keep
         mcp.state = "running"
+        mcp.active_requests = 0
+        mcp._active_request_ids.clear()
+        mcp.last_request_at = None
+        mcp.last_response_at = None
+        mcp.last_activity_at = None
         mcp.logs.append(
             f"[mcp] adopted existing MCP server (pgid={keep}, "
             f"stopped {len(mcp_groups) - 1} stale duplicate(s))"
@@ -1107,6 +1203,11 @@ def mcp_start(req: McpStartRequest) -> dict[str, Any]:
     mcp.state = "starting"
     mcp.repo_path = repo_path
     mcp.last_error = None
+    mcp.active_requests = 0
+    mcp._active_request_ids.clear()
+    mcp.last_request_at = None
+    mcp.last_response_at = None
+    mcp.last_activity_at = None
     mcp.logs.append(f"[mcp] starting: {shlex.join(cmd)}")
 
     def _on_exit(h: McpHandle) -> None:
@@ -1136,6 +1237,8 @@ def mcp_stop() -> dict[str, Any]:
         _stop_adopted_pid(mcp.adopted_pid)
         mcp.adopted_pid = None
         mcp.state = "stopped"
+    mcp.active_requests = 0
+    mcp._active_request_ids.clear()
     return mcp.status()
 
 

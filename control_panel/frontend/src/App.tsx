@@ -20,6 +20,15 @@ import Markdown from './Markdown'
 
 type LampTone = 'off' | 'ok' | 'busy' | 'err'
 type QueryDepth = 'shallow' | 'normal' | 'deep'
+type McpActivity =
+  | 'stopped'
+  | 'starting'
+  | 'running'
+  | 'stopping'
+  | 'error'
+  | 'idle'
+  | 'busy'
+  | 'stalled'
 
 function lampTone(state: string): LampTone {
   switch (state) {
@@ -30,6 +39,44 @@ function lampTone(state: string): LampTone {
       return 'busy'
     case 'error':
       return 'err'
+    default:
+      return 'off'
+  }
+}
+
+function mcpActivityLabel(activity: McpActivity): string {
+  switch (activity) {
+    case 'busy':
+      return 'WORKING'
+    case 'stalled':
+      return 'STALLED'
+    case 'idle':
+      return 'IDLE'
+    case 'starting':
+      return 'BOOTING'
+    case 'stopping':
+      return 'STOPPING'
+    case 'error':
+      return 'ERROR'
+    case 'running':
+      return 'RUNNING'
+    default:
+      return 'OFFLINE'
+  }
+}
+
+function mcpActivityTone(activity: McpActivity): LampTone {
+  switch (activity) {
+    case 'busy':
+    case 'starting':
+    case 'stopping':
+      return 'busy'
+    case 'error':
+    case 'stalled':
+      return 'err'
+    case 'idle':
+    case 'running':
+      return 'ok'
     default:
       return 'off'
   }
@@ -576,7 +623,8 @@ function McpPanel({
   onStop: () => void
   onLogs: () => void
 }) {
-  const tone = lampTone(status.state)
+  const activity = status.activity ?? status.state
+  const tone = mcpActivityTone(activity)
   const stopVisible =
     status.state === 'running' ||
     status.state === 'starting' ||
@@ -606,7 +654,7 @@ function McpPanel({
     <section className="card mcp-card" data-tone={tone}>
       <header className="card-head">
         <div className="card-ident">
-          <StatusLamp tone={tone} pulse={status.state === 'starting'} />
+          <StatusLamp tone={tone} pulse={activity === 'busy' || status.state === 'starting'} />
           <div className="card-title">
             <h3>Unified MCP Server</h3>
             <code className="card-path">{status.url}</code>
@@ -614,9 +662,18 @@ function McpPanel({
         </div>
         <div className="card-meta">
           <span className={`badge badge-${status.state}`}>{status.state.toUpperCase()}</span>
+          <span className={`badge badge-activity-${activity}`}>{mcpActivityLabel(activity)}</span>
           <span className="meta-item">
             <span className="meta-k">PID</span>
             {status.pid ?? '—'}
+          </span>
+          <span className="meta-item">
+            <span className="meta-k">ACTIVE REQS</span>
+            {status.active_requests ?? 0}
+          </span>
+          <span className="meta-item">
+            <span className="meta-k">LAST MCP WORK</span>
+            {formatAgo(status.last_activity_at ?? null)}
           </span>
           <span className="meta-item">
             <span className="meta-k">DEFAULT REPO</span>
@@ -851,7 +908,19 @@ export default function App() {
 
       <main className="layout">
         <McpPanel
-          status={status?.mcp ?? { state: 'stopped', pid: null, repo_path: null, url: 'http://127.0.0.1:8765/mcp', last_error: null, log_count: 0 }}
+          status={status?.mcp ?? {
+            state: 'stopped',
+            activity: 'stopped',
+            active_requests: 0,
+            last_request_at: null,
+            last_response_at: null,
+            last_activity_at: null,
+            pid: null,
+            repo_path: null,
+            url: 'http://127.0.0.1:8765/mcp',
+            last_error: null,
+            log_count: 0,
+          }}
           repos={repos}
           logs={mcpLogsVisible ? (logs.__mcp__ ?? null) : null}
           onStart={(p) => withLoading('mcp', () => mcpStart(p || undefined))}

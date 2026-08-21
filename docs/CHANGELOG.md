@@ -2,6 +2,12 @@
 
 ## 2026-08-21
 
+### Control panel: MCP activity indicator (working vs stalled) ✅
+- **MCP server logging** (`codebase_rag/mcp/server.py`) — HTTP transport middleware now emits explicit request lifecycle lines (`REQ <id> START ...` and `REQ <id> END status=... dur_ms=...`) so downstream tools can track real in-flight MCP work.
+- **Backend status telemetry** (`control_panel/backend/main.py`) — MCP handle now tracks active request IDs, last request/response/activity timestamps, and exposes `activity` (`idle` / `busy` / `stalled` plus process-state fallbacks) in `/api/status`.
+- **Frontend visibility** (`control_panel/frontend/src/App.tsx`, `control_panel/frontend/src/App.css`, `control_panel/frontend/src/types.ts`) — MCP card now shows an activity badge (`WORKING`, `IDLE`, `STALLED`, etc.), active request count, and "last MCP work" age so heavy processing vs likely stalls is visible while agents run.
+- **Control panel docs** (`control_panel/README.md`) — usage/API sections now describe the new MCP activity telemetry fields and dashboard indicator semantics.
+
 ### Root README: control-center overview ✅
 - Replaced the upstream-scale technical overview and embedded film link with a
   concise guide to this fork's control panel, real-time watchers, unified MCP

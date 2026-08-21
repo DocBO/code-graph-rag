@@ -56,6 +56,8 @@ The dashboard polls `/api/status` every 2.5 s and shows:
 - which repos have an **active watcher** (green lamp)
 - when an **update is running** (pulsing lamp + `UPDATING` badge, parsed from
   watcher log lines)
+- MCP server **activity state** (`WORKING` / `IDLE` / `STALLED`) with active
+   request count and last-work timestamp
 - last-update time and duration, per-repo log tails, and MCP server state
 
 A **Query Codebase (RAG)** card runs `query_codebase` against a selected repo:
@@ -82,6 +84,11 @@ the agent's markdown answer is rendered in place with a **Copy** button.
 
 `POST /api/query` accepts `repo_path`, `question`, and optional
 `search_depth` (`shallow`/`normal`/`deep`, default `normal`).
+
+`GET /api/status` now includes MCP activity telemetry under `mcp`:
+- `activity`: `idle`, `busy`, `stalled`, or process-state values (`starting`, `stopping`, `error`, `stopped`)
+- `active_requests`: count of in-flight MCP request methods (`POST`/`PUT`/`PATCH`/`DELETE`)
+- `last_activity_at`: epoch timestamp of the latest non-keepalive MCP log event
 
 `POST /api/repos/{path}/embedding` spawns `realtime_updater.py --only-embedding`
 as a tracked subprocess: it cleans the Qdrant collection and regenerates all

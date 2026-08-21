@@ -345,6 +345,27 @@ class TestModelCreation:
         )
 
     @patch("codebase_rag.providers.base.PydanticOpenAIProvider")
+    @patch("codebase_rag.providers.base.OpenAIResponsesModel")
+    @patch("codebase_rag.providers.base.OpenAIResponsesModelSettings")
+    def test_openrouter_model_creation_with_reasoning_effort(
+        self,
+        mock_model_settings: Any,
+        mock_openai_model: Any,
+        mock_openai_provider: Any,
+    ) -> None:
+        """OpenRouter models receive the configured OpenAI reasoning setting."""
+        provider = OpenRouterProvider(api_key="sk-test-key", reasoning_effort="low")
+
+        provider.create_model("openai/gpt-5.6-luna")
+
+        mock_model_settings.assert_called_once_with(openai_reasoning_effort="low")
+        mock_openai_model.assert_called_once_with(
+            "openai/gpt-5.6-luna",
+            provider=mock_openai_provider.return_value,
+            settings=mock_model_settings.return_value,
+        )
+
+    @patch("codebase_rag.providers.base.PydanticOpenAIProvider")
     @patch("codebase_rag.providers.base.OpenAIModel")
     def test_ollama_model_creation(
         self, mock_openai_model: Any, mock_openai_provider: Any

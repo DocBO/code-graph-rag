@@ -803,6 +803,17 @@ export default function App() {
           </h1>
         </div>
         <div className="topbar-right">
+          <div className="model-tile" title="Models used for RAG orchestration and Cypher generation">
+            <span className="meta-k">ACTIVE MODELS</span>
+            <span className="model-row">
+              <span>ORCH</span>
+              <code>{cfg ? `${cfg.models.orchestrator.provider}/${cfg.models.orchestrator.model}` : '…'}</code>
+            </span>
+            <span className="model-row">
+              <span>CYPHER</span>
+              <code>{cfg ? `${cfg.models.cypher.provider}/${cfg.models.cypher.model}` : '…'}</code>
+            </span>
+          </div>
           <span
             className={`sys chip chip-mg${!status?.memgraph?.alive ? ' chip-mg-err' : ''}`}
           >

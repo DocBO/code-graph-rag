@@ -591,6 +591,10 @@ Configuration is managed through environment variables in `.env` file:
 
 ### Provider-Specific Settings
 
+- `REASONING_EFFORT_ORCHESTRATOR`: OpenAI/OpenRouter orchestrator reasoning effort (`low`, `medium`, or `high`; default: `high`).
+- `REASONING_EFFORT_CYPHER`: OpenAI/OpenRouter Cypher-generator reasoning effort (`low`, `medium`, or `high`; default: `high`).
+  These settings apply when the selected model supports reasoning.
+
 #### Orchestrator Model Configuration
 - `ORCHESTRATOR_PROVIDER`: Provider name (`google`, `openai`, `openrouter`, `ollama`)
 - `ORCHESTRATOR_MODEL`: Model ID (e.g., `gemini-2.5-pro`, `gpt-4o`, `llama3.2`)

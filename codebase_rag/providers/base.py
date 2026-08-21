@@ -1,13 +1,17 @@
 """Base provider interface and registry for LLM providers."""
 
 from abc import ABC, abstractmethod
-from typing import Any, cast
+from typing import Any, Literal, cast
 from urllib.parse import urljoin
 
 import httpx
 from loguru import logger
 from pydantic_ai.models.gemini import GeminiModel, GeminiModelSettings
-from pydantic_ai.models.openai import OpenAIModel, OpenAIResponsesModel
+from pydantic_ai.models.openai import (
+    OpenAIModel,
+    OpenAIResponsesModel,
+    OpenAIResponsesModelSettings,
+)
 from pydantic_ai.providers.google_gla import GoogleGLAProvider
 from pydantic_ai.providers.google_vertex import GoogleVertexProvider, VertexAiRegion
 from pydantic_ai.providers.openai import OpenAIProvider as PydanticOpenAIProvider
@@ -101,11 +105,13 @@ class OpenAIProvider(ModelProvider):
         self,
         api_key: str | None = None,
         endpoint: str = "https://api.openai.com/v1",
+        reasoning_effort: Literal["low", "medium", "high"] | None = None,
         **kwargs: Any,
     ) -> None:
         super().__init__(**kwargs)
         self.api_key = api_key
         self.endpoint = endpoint
+        self.reasoning_effort = reasoning_effort
 
     @property
     def provider_name(self) -> str:
@@ -122,7 +128,14 @@ class OpenAIProvider(ModelProvider):
         self.validate_config()
 
         provider = PydanticOpenAIProvider(api_key=self.api_key, base_url=self.endpoint)
-        return OpenAIResponsesModel(model_id, provider=provider, **kwargs)
+        if self.reasoning_effort is None:
+            return OpenAIResponsesModel(model_id, provider=provider, **kwargs)
+        model_settings = OpenAIResponsesModelSettings(
+            openai_reasoning_effort=self.reasoning_effort
+        )
+        return OpenAIResponsesModel(
+            model_id, provider=provider, settings=model_settings, **kwargs
+        )
 
 
 class OpenRouterProvider(ModelProvider):
@@ -132,11 +145,13 @@ class OpenRouterProvider(ModelProvider):
         self,
         api_key: str | None = None,
         endpoint: str | None = None,
+        reasoning_effort: Literal["low", "medium", "high"] | None = None,
         **kwargs: Any,
     ) -> None:
         super().__init__(**kwargs)
         self.api_key = api_key
         self.endpoint = endpoint or "https://openrouter.ai/api/v1"
+        self.reasoning_effort = reasoning_effort
 
     @property
     def provider_name(self) -> str:
@@ -156,7 +171,14 @@ class OpenRouterProvider(ModelProvider):
             api_key=self.api_key,
             base_url=self.endpoint,
         )
-        return OpenAIResponsesModel(model_id, provider=provider, **kwargs)
+        if self.reasoning_effort is None:
+            return OpenAIResponsesModel(model_id, provider=provider, **kwargs)
+        model_settings = OpenAIResponsesModelSettings(
+            openai_reasoning_effort=self.reasoning_effort
+        )
+        return OpenAIResponsesModel(
+            model_id, provider=provider, settings=model_settings, **kwargs
+        )
 
 
 class OllamaProvider(ModelProvider):

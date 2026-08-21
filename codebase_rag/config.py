@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Literal
 
 from dotenv import load_dotenv
 from prompt_toolkit.styles import Style
@@ -23,6 +23,7 @@ class ModelConfig:
     region: str | None = None
     provider_type: str | None = None
     thinking_budget: int | None = None
+    reasoning_effort: Literal["low", "medium", "high"] = "high"
     service_account_file: str | None = None
 
 
@@ -45,6 +46,9 @@ class AppConfig(BaseSettings):
     MEMGRAPH_HTTP_PORT: int = 7444
     LAB_PORT: int = 3000
     MEMGRAPH_BATCH_SIZE: int = 1000
+    # OpenAI Responses/OpenRouter reasoning levels for supported reasoning models.
+    REASONING_EFFORT_ORCHESTRATOR: Literal["low", "medium", "high"] = "high"
+    REASONING_EFFORT_CYPHER: Literal["low", "medium", "high"] = "high"
 
     # Provider-specific settings for orchestrator
     ORCHESTRATOR_PROVIDER: str = ""
@@ -130,6 +134,7 @@ class AppConfig(BaseSettings):
                 region=getattr(self, f"{role_upper}_REGION", "us-central1"),
                 provider_type=getattr(self, f"{role_upper}_PROVIDER_TYPE", None),
                 thinking_budget=getattr(self, f"{role_upper}_THINKING_BUDGET", None),
+                reasoning_effort=getattr(self, f"REASONING_EFFORT_{role_upper}"),
                 service_account_file=getattr(
                     self, f"{role_upper}_SERVICE_ACCOUNT_FILE", None
                 ),

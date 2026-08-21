@@ -3,9 +3,9 @@ from pydantic_ai import Agent, Tool
 
 from ..config import settings
 from ..prompts import (
+    CONTEXT_SYNTHESIS_PROMPT,
     CYPHER_SYSTEM_PROMPT,
     LOCAL_CYPHER_SYSTEM_PROMPT,
-    CONTEXT_SYNTHESIS_PROMPT,
     RAG_ORCHESTRATOR_SYSTEM_PROMPT,
 )
 from ..providers.base import get_provider
@@ -19,14 +19,14 @@ class LLMGenerationError(Exception):
 
 def _clean_cypher_response(response_text: str) -> str:
     """Utility to clean up common LLM formatting artifacts from a Cypher query.
-    
+
     Handles:
     - Markdown code blocks (```cypher ... ```)
     - Extra whitespace and formatting
     - Trailing semicolons (removes them - Cypher doesn't use semicolons)
     """
     query = response_text.strip()
-    
+
     # Remove markdown code blocks
     if query.startswith("```"):
         # Remove opening ```cypher or ```
@@ -36,18 +36,18 @@ def _clean_cypher_response(response_text: str) -> str:
         # Remove closing ```
         if query.endswith("```"):
             query = query[:-3]
-    
+
     # Remove backticks
     query = query.strip().replace("`", "")
-    
+
     # Remove 'cypher' keyword if it appears at the start
     if query.lower().startswith("cypher"):
         query = query[6:].strip()
-    
+
     # IMPORTANT: Remove trailing semicolons - Cypher doesn't use them!
     # The LLM often adds them from SQL/SQL-like training data
     query = query.rstrip(";").strip()
-    
+
     return query
 
 
@@ -68,6 +68,7 @@ class CypherGenerator:
                 region=config.region,
                 provider_type=config.provider_type,
                 thinking_budget=config.thinking_budget,
+                reasoning_effort=config.reasoning_effort,
             )
 
             # Create model using provider
@@ -105,14 +106,14 @@ class CypherGenerator:
                 )
 
             query = _clean_cypher_response(result.output)
-            
+
             # Validate the cleaned query
             query_upper = query.upper().strip()
             if not query_upper.startswith("MATCH"):
                 raise LLMGenerationError(
                     f"Generated query doesn't start with MATCH clause: {query}"
                 )
-            
+
             # Warn about common Cypher syntax issues
             if ";" in query:
                 logger.warning(
@@ -120,7 +121,7 @@ class CypherGenerator:
                     f"Removing them. Query: {query}"
                 )
                 query = query.replace(";", "")
-            
+
             logger.info(f"  [CypherGenerator] Generated Cypher: {query}")
             return query
         except LLMGenerationError:
@@ -147,6 +148,7 @@ def create_rag_orchestrator(
             region=config.region,
             provider_type=config.provider_type,
             thinking_budget=config.thinking_budget,
+            reasoning_effort=config.reasoning_effort,
         )
 
         # Create model using provider
@@ -173,6 +175,7 @@ def create_context_synthesizer() -> Agent:
             region=config.region,
             provider_type=config.provider_type,
             thinking_budget=config.thinking_budget,
+            reasoning_effort=config.reasoning_effort,
         )
         llm = provider.create_model(config.model_id)
         return Agent(

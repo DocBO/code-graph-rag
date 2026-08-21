@@ -33,10 +33,16 @@ export interface MemgraphHealth {
   error: string | null
 }
 
+export interface ActiveModel {
+  provider: string
+  model: string
+}
+
 export interface ControlConfig {
   project_root: string
   memgraph: { host: string; port: number }
   mcp: { host: string; port: number; path: string }
+  models: { orchestrator: ActiveModel; cypher: ActiveModel }
   default_debounce: number
   default_batch_size: number
 }

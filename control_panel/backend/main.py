@@ -947,6 +947,10 @@ def health() -> dict[str, Any]:
 @app.get("/api/status")
 def status() -> dict[str, Any]:
     memgraph = _probe_memgraph_liveness()
+    from codebase_rag.config import settings
+
+    orchestrator = settings.active_orchestrator_config
+    cypher = settings.active_cypher_config
     return {
         "repos": manager.list_repos(),
         "mcp": manager.mcp.status(),
@@ -955,6 +959,13 @@ def status() -> dict[str, Any]:
             "project_root": str(PROJECT_ROOT),
             "memgraph": {"host": MEMGRAPH_HOST, "port": MEMGRAPH_PORT},
             "mcp": {"host": MCP_HOST, "port": MCP_PORT, "path": MCP_PATH},
+            "models": {
+                "orchestrator": {
+                    "provider": orchestrator.provider,
+                    "model": orchestrator.model_id,
+                },
+                "cypher": {"provider": cypher.provider, "model": cypher.model_id},
+            },
             "default_debounce": DEFAULT_DEBOUNCE,
             "default_batch_size": DEFAULT_BATCH_SIZE,
         },

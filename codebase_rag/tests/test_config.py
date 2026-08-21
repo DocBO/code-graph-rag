@@ -24,6 +24,7 @@ class TestModelConfig:
         assert config.region is None
         assert config.provider_type is None
         assert config.thinking_budget is None
+        assert config.reasoning_effort == "high"
         assert config.service_account_file is None
 
     def test_all_fields_set(self) -> None:
@@ -36,12 +37,14 @@ class TestModelConfig:
             region="europe-west1",
             provider_type="vertex",
             thinking_budget=8000,
+            reasoning_effort="medium",
             service_account_file="/path/sa.json",
         )
         assert config.provider == "google"
         assert config.model_id == "gemini-2.5-pro"
         assert config.api_key == "key123"
         assert config.thinking_budget == 8000
+        assert config.reasoning_effort == "medium"
         assert config.service_account_file == "/path/sa.json"
 
 
@@ -149,3 +152,21 @@ class TestDefaultFallback:
             config = AppConfig(_env_file=None)
             cyp = config.active_cypher_config
             assert cyp.provider == "ollama"
+
+    def test_reasoning_effort_is_configured_per_model_role(self) -> None:
+        with patch.dict(
+            os.environ,
+            {
+                "ORCHESTRATOR_PROVIDER": "openrouter",
+                "ORCHESTRATOR_MODEL": "openai/gpt-5.6-luna",
+                "CYPHER_PROVIDER": "openrouter",
+                "CYPHER_MODEL": "openai/gpt-5.6-luna",
+                "REASONING_EFFORT_ORCHESTRATOR": "low",
+                "REASONING_EFFORT_CYPHER": "medium",
+            },
+            clear=True,
+        ):
+            config = AppConfig(_env_file=None)
+
+            assert config.active_orchestrator_config.reasoning_effort == "low"
+            assert config.active_cypher_config.reasoning_effort == "medium"

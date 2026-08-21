@@ -795,6 +795,7 @@ def _update_single_model_setting(role: str, model_string: str) -> None:
         "region": current_config.region,
         "provider_type": current_config.provider_type,
         "thinking_budget": current_config.thinking_budget,
+        "reasoning_effort": current_config.reasoning_effort,
         "service_account_file": current_config.service_account_file,
     }
 

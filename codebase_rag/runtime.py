@@ -50,6 +50,7 @@ def initialize_services_and_agent(
             region=config.region,
             provider_type=config.provider_type,
             thinking_budget=config.thinking_budget,
+            reasoning_effort=config.reasoning_effort,
             service_account_file=config.service_account_file,
         )
         provider.validate_config()

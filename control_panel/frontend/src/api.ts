@@ -75,6 +75,14 @@ export function stopWatcher(path: string) {
   return req(`/repos/${encodeRepoPath(path)}/watch/stop`, { method: 'POST' })
 }
 
+export function runEmbeddingOnly(path: string) {
+  return req(`/repos/${encodeRepoPath(path)}/embedding`, { method: 'POST' })
+}
+
+export function shutdownAll() {
+  return req('/shutdown', { method: 'POST' })
+}
+
 export function repoLogs(path: string, limit = 250): Promise<string[]> {
   return req(`/repos/${encodeRepoPath(path)}/logs?limit=${limit}`)
 }

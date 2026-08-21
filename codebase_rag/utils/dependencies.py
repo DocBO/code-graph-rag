@@ -15,16 +15,6 @@ def _check_dependency(module_name: str) -> bool:
     return _dependency_cache[module_name]
 
 
-def has_torch() -> bool:
-    """Check if PyTorch is available."""
-    return _check_dependency("torch")
-
-
-def has_transformers() -> bool:
-    """Check if Transformers is available."""
-    return _check_dependency("transformers")
-
-
 def has_qdrant_client() -> bool:
     """Check if Qdrant client is available."""
     return _check_dependency("qdrant_client")
@@ -34,18 +24,14 @@ def has_semantic_dependencies() -> bool:
     """Check if semantic search dependencies are available.
 
     Returns:
-        True if either:
-        1. External embedder is configured (EMBED_ENDPOINT and EMBED_MODEL set), OR
-        2. All local dependencies (qdrant_client, torch, transformers) are available.
+        True if an external embedder is configured (EMBED_ENDPOINT and
+        EMBED_MODEL set) and the Qdrant client is available.
     """
-    # Check if external embedder is configured
     from ..config import settings
 
-    if settings.EMBED_ENDPOINT and settings.EMBED_MODEL:
-        return True
-
-    # Fall back to checking local dependencies
-    return has_qdrant_client() and has_torch() and has_transformers()
+    if not (settings.EMBED_ENDPOINT and settings.EMBED_MODEL):
+        return False
+    return has_qdrant_client()
 
 
 def check_dependencies(required_modules: list[str]) -> bool:
@@ -73,5 +59,4 @@ def get_missing_dependencies(required_modules: list[str]) -> list[str]:
 
 
 # Commonly used dependency combinations
-SEMANTIC_DEPENDENCIES = ["qdrant_client", "torch", "transformers"]
-ML_DEPENDENCIES = ["torch", "transformers"]
+SEMANTIC_DEPENDENCIES = ["qdrant_client"]

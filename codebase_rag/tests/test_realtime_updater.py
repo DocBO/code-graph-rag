@@ -128,6 +128,32 @@ def test_file_deletion_flow(
     mock_updater.ingestor.flush_all.assert_called_once()
 
 
+def test_failed_update_logs_exception_details_and_keeps_changes_queued(
+    event_handler: CodeChangeEventHandler, mock_updater: MagicMock, temp_repo: Path
+) -> None:
+    """Retry logs retain the failure cause for the control-panel error display."""
+    test_file = temp_repo / "broken.py"
+    test_file.write_text("def broken(): pass", encoding="utf-8")
+    mock_updater.factory.definition_processor.process_file.side_effect = RuntimeError(
+        "Memgraph is unavailable"
+    )
+    event_handler._schedule_processing = MagicMock()
+    event_handler.pending_changes.add(str(test_file))
+
+    with patch("realtime_updater.logger.exception") as mock_exception:
+        event_handler._process_pending_changes()
+
+    assert str(test_file) in event_handler.pending_changes
+    event_handler._schedule_processing.assert_called_once()
+    assert mock_exception.call_args.args[:3] == (
+        "Graph update failed for {} file(s): {}: {}. Keeping pending changes "
+        "queued and retrying after debounce interval.",
+        1,
+        "RuntimeError",
+    )
+    assert str(mock_exception.call_args.args[3]) == "Memgraph is unavailable"
+
+
 def test_irrelevant_files_are_ignored(
     event_handler: CodeChangeEventHandler, mock_updater: MagicMock, temp_repo: Path
 ) -> None:

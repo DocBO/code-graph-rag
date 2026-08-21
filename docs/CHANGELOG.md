@@ -1,5 +1,29 @@
 # Changelog
 
+## 2026-08-12
+
+### Control panel: live-updating log tails ✅
+- **Frontend** (`control_panel/frontend/src/App.tsx`) — opened repo/MCP log panels now poll their `/logs` endpoints every 2s (`refreshOpenLogs`), so the displayed tail stays current instead of freezing at the moment the panel was opened. Auto-scroll now only pins to the bottom while the user is already at the bottom (`stickToBottom` tracked via `onScroll`), so polling never yanks the viewport away while the user scrolls back through history.
+
+### Control panel: global "Stop all" action ✅
+- **Frontend** (`control_panel/frontend/src/App.tsx`, `api.ts`, `App.css`) — a red **Stop all** button in the topbar stops every process. It asks for confirmation, disables itself with a `Stopping…` label, and calls the new `/api/shutdown` endpoint. Styled with a new `.btn-stopall` class (red accent).
+- **Backend** (`control_panel/backend/main.py`) — `RepoManager.stop_all()` stops all registered watchers, any running embedding-only jobs, and the MCP server. New `POST /api/shutdown` endpoint runs it, then terminates the control panel API process itself (SIGTERM after a 1s delay so the HTTP response is flushed first). Returns a summary: `{watchers, embeddings, mcp, api}`.
+- **Docs** — `control_panel/README.md` API table + description.
+
+### Control panel: "Only embeddings" action button on the watcher tile ✅
+- **Frontend** (`control_panel/frontend/src/App.tsx`, `api.ts`, `types.ts`) — the repo card now has an **Only embeddings** button (violet accent) that regenerates all semantic embeddings without file ingestion. While it runs the button shows `Embedding…` and is disabled; the tile badge shows `UPDATING` (Pass 4 start/end log lines are now parsed by the backend update classifier).
+- **Backend** (`control_panel/backend/main.py`) — new `POST /api/repos/{path}/embedding` endpoint backed by `RepoManager.start_embedding_only()`: spawns `realtime_updater.py --only-embedding` as a tracked subprocess with log streaming into the repo's watcher log tail, and exposes `embedding_in_progress` in the watcher status payload. Rejects with 409 if a regeneration is already running.
+- **CLI** (`realtime_updater.py`) — new `--only-embedding` flag: one-shot mode that cleans the Qdrant collection and runs Pass 4 (`GraphUpdater._generate_semantic_embeddings`) from the existing graph, then exits (no file watching).
+- **Docs** — `control_panel/README.md` API table + description.
+
+### Embedder rate limiter + 429 retry (watcher Pass 4) ✅
+- **Root cause** — `_embed_external_batch` POSTed without throttling; a 429 from the external embedder raised `EmbeddingError` and Pass 4 discarded the entire 200-item chunk (`[Pass 4] Failed chunk at ...`), leaving the semantic database with only a subset of the code.
+- **Shared token-bucket rate limiter** (`codebase_rag/embedder.py`) — `EmbedRateLimiter` spaces external embedder requests to `EMBED_RATE_LIMIT_RPM` (default 60/min, i.e. 1 request/second), shared across watcher Pass 4, MCP `start_updater`, CLI `--only-embedding`, and agent tools so parallel paths never flood the endpoint.
+- **429/5xx retry with backoff** — transient 429/500/502/503/504 responses are retried up to `EMBED_MAX_RETRIES` (default 3) using the server's `Retry-After` header when present, else exponential backoff from `EMBED_RETRY_BACKOFF` (default 2.0s). A 429 that exhausts retries now raises a dedicated "rate limit exceeded" error instead of a generic one.
+- **Per-item fallback in Pass 4** (`codebase_rag/graph_updater.py`) — if a batch embed still fails, the chunk is re-embedded item-by-item so only genuinely failing items are skipped instead of the whole chunk; per-item failures are logged and the remaining embeddings are still stored.
+- **Config** — new `EMBED_RATE_LIMIT_RPM`, `EMBED_MAX_RETRIES`, `EMBED_RETRY_BACKOFF` settings (`codebase_rag/config.py`), documented in `.env.example`.
+- **Tests** — `codebase_rag/tests/test_embedder.py`: limiter spacing/throttle, `Retry-After` parsing (seconds + HTTP-date), success path, 429→retry→success, and 429 retry exhaustion raising `EmbeddingError`. 8 passed.
+
 ## 2026-08-11
 
 ### MCP Compatibility: `query_codegraph` Alias + HTTP Error Mitigation ✅

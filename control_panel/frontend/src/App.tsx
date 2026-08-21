@@ -8,8 +8,10 @@ import {
   mcpStop,
   removeRepo,
   repoLogs,
+  runEmbeddingOnly,
   runQuery,
   runSemantic,
+  shutdownAll,
   startWatcher,
   stopWatcher,
 } from './api'
@@ -62,9 +64,7 @@ function WatcherBadge({ state, updating }: { state: string; updating: boolean })
     )
   }
   return <span className={`badge badge-${state}`}>{state.toUpperCase()}</span>
-}
-
-interface RepoCardProps {
+}interface RepoCardProps {
   repo: RepoInfo
   expanded: boolean
   logs: string[] | null
@@ -72,6 +72,7 @@ interface RepoCardProps {
   onToggleLogs: () => void
   onStart: () => void
   onStartWithScan: () => void
+  onEmbeddingOnly: () => void
   onStop: () => void
   onRemove: () => void
 }
@@ -84,6 +85,7 @@ function RepoCard({
   onToggleLogs,
   onStart,
   onStartWithScan,
+  onEmbeddingOnly,
   onStop,
   onRemove,
 }: RepoCardProps) {
@@ -95,12 +97,21 @@ function RepoCard({
     watcher.state === 'starting' ||
     watcher.state === 'stopping'
   const logRef = useRef<HTMLPreElement>(null)
+  const stickToBottom = useRef(true)
 
   useEffect(() => {
-    if (expanded && logRef.current) {
-      logRef.current.scrollTop = logRef.current.scrollHeight
+    const el = logRef.current
+    if (!expanded || !el) return
+    if (stickToBottom.current) {
+      el.scrollTop = el.scrollHeight
     }
   }, [expanded, logs])
+
+  const onLogScroll = () => {
+    const el = logRef.current
+    if (!el) return
+    stickToBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 40
+  }
 
   return (
     <article className="card" data-tone={tone}>
@@ -165,6 +176,14 @@ function RepoCard({
           </button>
         )}
         <button
+          className="btn btn-ghost btn-embedding"
+          onClick={onEmbeddingOnly}
+          disabled={busy || watcher.embedding_in_progress}
+          title="Regenerate all semantic embeddings from the graph (no file ingestion)"
+        >
+          {watcher.embedding_in_progress ? 'Embedding…' : 'Only embeddings'}
+        </button>
+        <button
           className="btn btn-ghost"
           onClick={onToggleLogs}
           disabled={loading}
@@ -177,7 +196,7 @@ function RepoCard({
       </footer>
 
       {expanded && (
-        <pre className="logs" ref={logRef}>
+        <pre className="logs" ref={logRef} onScroll={onLogScroll}>
           {logs && logs.length > 0 ? logs.join('\n') : '— no log lines yet —'}
         </pre>
       )}
@@ -564,12 +583,21 @@ function McpPanel({
     status.state === 'stopping'
   const [selected, setSelected] = useState<string>('')
   const logRef = useRef<HTMLPreElement>(null)
+  const stickToBottom = useRef(true)
 
   useEffect(() => {
-    if (logs && logRef.current) {
-      logRef.current.scrollTop = logRef.current.scrollHeight
+    const el = logRef.current
+    if (!logs || !el) return
+    if (stickToBottom.current) {
+      el.scrollTop = el.scrollHeight
     }
   }, [logs])
+
+  const onLogScroll = () => {
+    const el = logRef.current
+    if (!el) return
+    stickToBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 40
+  }
 
   const defaultRepo = repos[0]?.path ?? ''
   const effective = selected || defaultRepo
@@ -636,7 +664,11 @@ function McpPanel({
         </button>
       </footer>
 
-      {logs && <pre className="logs" ref={logRef}>{logs.join('\n')}</pre>}
+      {logs && (
+        <pre className="logs" ref={logRef} onScroll={onLogScroll}>
+          {logs.join('\n')}
+        </pre>
+      )}
     </section>
   )
 }
@@ -648,6 +680,7 @@ export default function App() {
   const [logs, setLogs] = useState<Record<string, string[] | null>>({})
   const [mcpLogsVisible, setMcpLogsVisible] = useState(false)
   const [loading, setLoading] = useState<Record<string, boolean>>({})
+  const [shuttingDown, setShuttingDown] = useState(false)
 
   const refresh = useCallback(async () => {
     try {
@@ -702,6 +735,59 @@ export default function App() {
     }
   }
 
+  const refreshOpenLogs = useCallback(async () => {
+    const openRepos = Object.entries(expanded)
+      .filter(([, open]) => open)
+      .map(([path]) => path)
+    const fetchAll: Promise<void>[] = []
+    for (const path of openRepos) {
+      fetchAll.push(
+        repoLogs(path)
+          .then((lines) => setLogs((s) => ({ ...s, [path]: lines })))
+          .catch(() => {
+            // Transient log-fetch failures must not spam the error banner.
+          }),
+      )
+    }
+    if (mcpLogsVisible) {
+      fetchAll.push(
+        mcpLogs()
+          .then((lines) => setLogs((s) => ({ ...s, __mcp__: lines })))
+          .catch(() => {
+            // Transient log-fetch failures must not spam the error banner.
+          }),
+      )
+    }
+    await Promise.all(fetchAll)
+  }, [expanded, mcpLogsVisible])
+
+  useEffect(() => {
+    if (Object.keys(expanded).some((k) => expanded[k]) || mcpLogsVisible) {
+      const id = setInterval(refreshOpenLogs, 2000)
+      return () => clearInterval(id)
+    }
+  }, [expanded, mcpLogsVisible, refreshOpenLogs])
+
+  const stopAll = async () => {
+    if (
+      !window.confirm(
+        'Stop all processes?\n\nThis stops every watcher, the MCP server, and the control panel API server itself.',
+      )
+    ) {
+      return
+    }
+    setShuttingDown(true)
+    setError(null)
+    try {
+      await shutdownAll()
+    } catch (e) {
+      // The API server exits itself right after responding, so a failed
+      // request here usually means it is already going down — treat that as
+      // expected rather than an error.
+      setError(e instanceof Error ? e.message : String(e))
+    }
+  }
+
   const repos = status?.repos ?? []
   const cfg = status?.config
 
@@ -735,6 +821,14 @@ export default function App() {
             <span className="meta-k">PROJECT</span>
             <span className="meta-ellipsis">{cfg?.project_root ?? '…'}</span>
           </span>
+          <button
+            className="btn btn-stopall"
+            onClick={stopAll}
+            disabled={shuttingDown}
+            title="Stop all watchers, the MCP server, and the control panel API"
+          >
+            {shuttingDown ? 'Stopping…' : 'Stop all'}
+          </button>
           <span className={`conn${error ? ' conn-err' : ''}`}>
             <StatusLamp tone={error ? 'err' : 'ok'} pulse={!status} />
             {error ? 'API ERROR' : status ? 'LINKED' : 'CONNECTING…'}
@@ -783,6 +877,9 @@ export default function App() {
                 onStart={() => withLoading(repo.path, () => startWatcher(repo.path))}
                 onStartWithScan={() =>
                   withLoading(repo.path, () => startWatcher(repo.path, true))
+                }
+                onEmbeddingOnly={() =>
+                  withLoading(repo.path, () => runEmbeddingOnly(repo.path))
                 }
                 onStop={() => withLoading(repo.path, () => stopWatcher(repo.path))}
                 onRemove={() => withLoading(repo.path, () => removeRepo(repo.path))}

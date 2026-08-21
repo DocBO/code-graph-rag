@@ -622,7 +622,7 @@ Configuration is managed through environment variables in `.env` file:
 - `TARGET_REPO_PATH`: Default repository path (default: `.`)
 - `LOCAL_MODEL_ENDPOINT`: Fallback endpoint for Ollama (default: `http://localhost:11434/v1`)
 - `INGEST_IGNORE_DIRS`: Comma-separated list of directories to ignore during ingest (e.g., `.uv-cache,.cache,openspec,codebase_rag/tests`)
-- `EMBED_ENDPOINT` / `EMBED_API_KEY` / `EMBED_MODEL`: External embedding API config (use when you don't want local torch/transformers)
+- `EMBED_ENDPOINT` / `EMBED_API_KEY` / `EMBED_MODEL`: External embedding API config (required for semantic search)
 - `QDRANT_HOST` / `QDRANT_PORT` / `QDRANT_API_KEY`: Remote Qdrant config; if unset, a local on-disk Qdrant is used
 
 ### Key Dependencies

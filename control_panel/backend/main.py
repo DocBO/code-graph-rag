@@ -128,6 +128,9 @@ class WatcherHandle:
         self.logs: deque[str] = deque(maxlen=LOG_LIMIT)
         self._reader: threading.Thread | None = None
         self._monitor: threading.Thread | None = None
+        self.embedding_proc: subprocess.Popen[str] | None = None
+        self.embedding_in_progress = False
+        self.embedding_monitor: threading.Thread | None = None
 
     def pid(self) -> int | None:
         if self.proc is not None:
@@ -143,6 +146,7 @@ class WatcherHandle:
             "last_update_duration": self.last_update_duration,
             "last_error": self.last_error,
             "log_count": len(self.logs),
+            "embedding_in_progress": self.embedding_in_progress,
         }
 
 
@@ -181,10 +185,12 @@ class McpHandle:
 _UPDATE_START_PATTERNS = (
     re.compile(r"Starting graph update"),
     re.compile(r"Performing initial full codebase scan"),
+    re.compile(r"Starting Pass 4: Generating semantic embeddings"),
 )
 _UPDATE_END_PATTERNS = (
     re.compile(r"Graph update completed"),
     re.compile(r"Initial scan complete"),
+    re.compile(r"Completed semantic embedding generation"),
 )
 _UPDATE_FAIL_PATTERN = re.compile(r"Graph update failed")
 
@@ -708,7 +714,10 @@ class RepoManager:
 
         effective_debounce = debounce or cfg.debounce
         effective_batch = batch_size or cfg.batch_size
-        no_update = not full_scan and cfg.no_update
+        # A regular restart always resumes incrementally from ingest metadata.
+        # The dashboard's dedicated full-scan action is the only path that
+        # should re-ingest the whole repository.
+        no_update = not full_scan
 
         cmd = [
             "uv",
@@ -767,6 +776,116 @@ class RepoManager:
             handle.adopted_pid = None
             handle.state = "stopped"
 
+    def start_embedding_only(self, path: str) -> WatcherHandle:
+        """Run a one-shot embedding-only regeneration as a tracked subprocess.
+
+        Cleans the Qdrant collection and regenerates all semantic embeddings
+        from the current graph (realtime_updater.py --only-embedding), without
+        touching the watcher or ingesting any files.
+        """
+        key = str(Path(path).expanduser().resolve())
+        cfg, _ = self.get_repo(key)
+
+        with self._lock:
+            handle = self._watchers.get(key) or WatcherHandle()
+            if handle.embedding_in_progress:
+                raise HTTPException(
+                    409, f"Embedding regeneration already running for {key}"
+                )
+            self._watchers[key] = handle
+
+        effective_batch = cfg.batch_size
+        cmd = [
+            "uv",
+            "run",
+            "python",
+            str(PROJECT_ROOT / "realtime_updater.py"),
+            cfg.path,
+            "--host",
+            MEMGRAPH_HOST,
+            "--port",
+            str(MEMGRAPH_PORT),
+            "--only-embedding",
+        ]
+        if effective_batch:
+            cmd += ["--batch-size", str(effective_batch)]
+
+        try:
+            proc = _spawn(cmd)
+        except FileNotFoundError as exc:
+            handle.last_error = f"uv not found: {exc}"
+            raise HTTPException(500, handle.last_error)
+
+        handle.embedding_proc = proc
+        handle.embedding_in_progress = True
+        handle.last_error = None
+        handle.logs.append(f"[embedding] starting: {shlex.join(cmd)}")
+
+        handle._reader = _LineReader(
+            proc,
+            handle.logs,
+            "embedding",
+            on_line=lambda line: self._tick_watcher(key, line),
+        )
+        handle._reader.start()
+
+        def _watch_embedding() -> None:
+            rc = proc.wait()
+            handle.embedding_proc = None
+            handle.embedding_in_progress = False
+            handle.update_in_progress = False
+            if rc == 0:
+                handle.logs.append("[embedding] completed successfully")
+            else:
+                handle.last_error = f"embedding process exited with code {rc}"
+                handle.logs.append(f"[embedding] failed with code {rc}")
+
+        handle.embedding_monitor = threading.Thread(
+            target=_watch_embedding, daemon=True
+        )
+        handle.embedding_monitor.start()
+        return handle
+
+    def stop_all(self) -> dict[str, Any]:
+        """Stop every watcher, embedding job, and the MCP server."""
+        stopped: dict[str, Any] = {
+            "watchers": 0,
+            "embeddings": 0,
+            "mcp": False,
+        }
+        with self._lock:
+            keys = list(self._repos.keys())
+
+        for key in keys:
+            handle = self._watchers.get(key)
+            if handle is None:
+                continue
+            if handle.embedding_proc is not None and handle.embedding_proc.poll() is None:
+                _stop_group(handle.embedding_proc)
+                handle.embedding_proc = None
+                handle.embedding_in_progress = False
+                handle.update_in_progress = False
+                stopped["embeddings"] += 1
+            try:
+                self.stop_watcher(key)
+                stopped["watchers"] += 1
+            except HTTPException:
+                pass
+
+        mcp = self.mcp
+        if mcp.proc is not None and mcp.proc.poll() is None:
+            mcp.state = "stopping"
+            _stop_group(mcp.proc)
+            mcp.state = "stopped"
+            stopped["mcp"] = True
+        elif mcp.adopted_pid is not None:
+            _stop_adopted_pid(mcp.adopted_pid)
+            mcp.adopted_pid = None
+            mcp.state = "stopped"
+            stopped["mcp"] = True
+
+        return stopped
+
     # -- log parsing (called by readers) ----------------------------------
 
     def _tick_watcher(self, path: str, line: str) -> None:
@@ -781,6 +900,7 @@ class RepoManager:
             if handle.last_update_at:
                 handle.last_update_duration = time.time() - handle.last_update_at
             handle.update_in_progress = False
+            handle.last_error = None
         elif kind == "fail":
             handle.last_error = line
             handle.update_in_progress = False
@@ -879,6 +999,31 @@ def stop_watcher(path: str) -> dict[str, Any]:
     manager.stop_watcher(path)
     _, handle = manager.get_repo(path)
     return handle.status()
+
+
+@app.post("/api/repos/{path:path}/embedding")
+def run_embedding_only(path: str) -> dict[str, Any]:
+    manager.get_repo(path)
+    handle = manager.start_embedding_only(path)
+    return handle.status()
+
+
+@app.post("/api/shutdown")
+def shutdown_all() -> dict[str, Any]:
+    """Stop every watcher, embedding job, and the MCP server, then exit the API.
+
+    The API process is terminated after the response is flushed so the client
+    can display the result instead of seeing a dropped connection.
+    """
+    stopped = manager.stop_all()
+
+    def _exit_api() -> None:
+        time.sleep(1.0)
+        os.kill(os.getpid(), signal.SIGTERM)
+
+    threading.Thread(target=_exit_api, daemon=True).start()
+    stopped["api"] = True
+    return stopped
 
 
 # -- unified MCP server -----------------------------------------------------

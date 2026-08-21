@@ -72,7 +72,9 @@ the agent's markdown answer is rendered in place with a **Copy** button.
 | DELETE | `/api/repos/{path}`               | Deregister a repo                    |
 | POST   | `/api/repos/{path}/watch/start`   | Start watcher (`full_scan` optional) |
 | POST   | `/api/repos/{path}/watch/stop`    | Stop watcher                         |
+| POST   | `/api/repos/{path}/embedding`     | Regenerate all embeddings (no ingest)|
 | GET    | `/api/repos/{path}/logs`          | Watcher log tail                     |
+| POST   | `/api/shutdown`                   | Stop all watchers, MCP, and the API  |
 | POST   | `/api/mcp/start`                  | Start the unified MCP server         |
 | POST   | `/api/mcp/stop`                   | Stop the MCP server                  |
 | GET    | `/api/mcp/logs`                   | MCP server log tail                  |
@@ -80,6 +82,17 @@ the agent's markdown answer is rendered in place with a **Copy** button.
 
 `POST /api/query` accepts `repo_path`, `question`, and optional
 `search_depth` (`shallow`/`normal`/`deep`, default `normal`).
+
+`POST /api/repos/{path}/embedding` spawns `realtime_updater.py --only-embedding`
+as a tracked subprocess: it cleans the Qdrant collection and regenerates all
+semantic embeddings from the current graph, without ingesting files or touching
+the watcher. The `Only embeddings` button on the repo card triggers it and the
+tile shows `UPDATING` while it runs (progress parsed from the Pass 4 log lines).
+
+`POST /api/shutdown` (topbar **Stop all** button) stops every watcher, any
+running embedding job, and the MCP server, then exits the control panel API
+process itself. The response is sent before the API terminates so the client
+sees the result.
 
 `{path}` is the URL-encoded absolute repo path.
 

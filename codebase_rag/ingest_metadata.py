@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
+import fnmatch
 import json
 import os
-import fnmatch
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -135,6 +135,25 @@ def compute_changes_since(
         "modified": len(modified),
         "total": len(added) + len(deleted) + len(modified),
     }
+
+
+def changed_file_paths_since_ingest(repo_path: Path) -> set[Path]:
+    """Return paths changed since the last successful ingest for a repository."""
+
+    repo_path = repo_path.resolve()
+    metadata = read_ingest_metadata(repo_path)
+    current_index = _walk_files(repo_path)
+    if metadata is None:
+        return {repo_path / relative_path for relative_path in current_index}
+
+    previous_index = metadata.file_index
+    changed_paths = set(current_index) ^ set(previous_index)
+    changed_paths.update(
+        relative_path
+        for relative_path in set(current_index) & set(previous_index)
+        if current_index[relative_path] != previous_index[relative_path]
+    )
+    return {repo_path / relative_path for relative_path in changed_paths}
 
 
 def summarize_ingest_status(repo_path: Path) -> tuple[str | None, dict[str, int], Path]:

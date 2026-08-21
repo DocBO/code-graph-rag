@@ -14,6 +14,7 @@
   --green: #35e08a;
   --red: #ff5c5c;
   --cyan: #5cc8ff;
+  --violet: #b18cff;
   --font-display: 'Rajdhani', 'IBM Plex Mono', monospace;
   --font-mono: 'IBM Plex Mono', ui-monospace, monospace;
 }
@@ -393,6 +394,18 @@ body::before {
   cursor: not-allowed;
 }
 
+.btn-stopall {
+  color: var(--red);
+  border-color: rgba(255, 92, 92, 0.4);
+  background: rgba(255, 92, 92, 0.06);
+  font-weight: 600;
+}
+
+.btn-stopall:hover:not(:disabled) {
+  background: rgba(255, 92, 92, 0.16);
+  border-color: var(--red);
+}
+
 .btn-start {
   color: var(--green);
   border-color: rgba(53, 224, 138, 0.4);
@@ -439,6 +452,17 @@ body::before {
 
 .btn-ghost {
   color: var(--text-dim);
+}
+
+.btn-embedding {
+  color: var(--violet);
+  border-color: rgba(177, 140, 255, 0.4);
+  background: rgba(177, 140, 255, 0.06);
+}
+
+.btn-embedding:hover:not(:disabled) {
+  background: rgba(177, 140, 255, 0.14);
+  border-color: var(--violet);
 }
 
 /* ── logs ─────────────────────────────────────────────────────────────── */

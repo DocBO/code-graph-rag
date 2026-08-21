@@ -93,9 +93,23 @@ class AppConfig(BaseSettings):
     EMBED_MODEL: str | None = None
     EMBED_DIMENSION: int | None = None
     EMBED_MAX_CHUNK_SIZE: int = 8000
+    # Max external embedder requests per minute. A token-bucket limiter spaces
+    # requests so the API is not flooded during full re-embeds (Pass 4).
+    EMBED_RATE_LIMIT_RPM: int = 60
+    # Retries on 429/5xx before the request fails; base seconds for backoff.
+    EMBED_MAX_RETRIES: int = 3
+    EMBED_RETRY_BACKOFF: float = 2.0
     QDRANT_HOST: str | None = None
     QDRANT_PORT: int | None = None
     QDRANT_API_KEY: str | None = None
+    # Qdrant write timeout (seconds) and retry budget for slow or large batches.
+    QDRANT_TIMEOUT: float = 60.0
+    QDRANT_MAX_RETRIES: int = 3
+    QDRANT_RETRY_BACKOFF: float = 2.0
+    # Maximum number of vectors per Qdrant upsert request. Large semantic
+    # regeneration passes can produce >1000 vectors in one loop iteration; cap
+    # request size to reduce timeout risk.
+    QDRANT_UPSERT_BATCH_SIZE: int = 256
 
     def _get_default_config(self, role: str) -> ModelConfig:
         """Determine default configuration for orchestrator or cypher."""

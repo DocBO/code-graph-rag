@@ -11,7 +11,10 @@ from watchdog.observers import Observer
 
 from codebase_rag.config import IGNORE_PATTERNS, IGNORE_SUFFIXES, settings
 from codebase_rag.graph_updater import GraphUpdater
-from codebase_rag.ingest_metadata import write_ingest_metadata
+from codebase_rag.ingest_metadata import (
+    changed_file_paths_since_ingest,
+    write_ingest_metadata,
+)
 from codebase_rag.language_config import get_language_config
 from codebase_rag.parser_loader import load_parsers
 from codebase_rag.services.graph_service import MemgraphIngestor
@@ -239,9 +242,13 @@ class CodeChangeEventHandler(FileSystemEventHandler):
 
             with self.pending_changes_lock:
                 self.pending_changes.difference_update(pending_snapshot)
-        except Exception:
+        except Exception as exc:
             logger.exception(
-                "Graph update failed. Keeping pending changes queued and retrying after debounce interval."
+                "Graph update failed for {} file(s): {}: {}. Keeping pending changes "
+                "queued and retrying after debounce interval.",
+                num_files,
+                type(exc).__name__,
+                exc,
             )
             self._schedule_processing()
 
@@ -324,7 +331,7 @@ def start_watcher(
 
         if skip_initial:
             logger.info(
-                "Skipping initial full scan (--no-update). Only watching for changes."
+                "Skipping initial full scan (--no-update). Checking for incremental changes."
             )
         else:
             logger.info("Performing initial full codebase scan...")
@@ -335,6 +342,18 @@ def start_watcher(
             logger.success("Initial scan complete. Starting real-time watcher.")
 
         event_handler = CodeChangeEventHandler(updater, debounce_seconds=debounce)
+        if skip_initial:
+            pending_paths = changed_file_paths_since_ingest(repo_path_obj)
+            if pending_paths:
+                logger.info(
+                    "Detected {} change(s) since the last ingest. Scheduling incremental update.",
+                    len(pending_paths),
+                )
+                with event_handler.pending_changes_lock:
+                    event_handler.pending_changes.update(map(str, pending_paths))
+                event_handler._schedule_processing()
+            else:
+                logger.info("No changes since the last ingest. Watching for changes.")
         observer = Observer()
         observer.schedule(event_handler, str(repo_path_obj), recursive=True)
         observer.start()
@@ -396,7 +415,39 @@ if __name__ == "__main__":
         default=False,
         help="Skip the initial full scan; only watch for incremental changes",
     )
+    parser.add_argument(
+        "--only-embedding",
+        action="store_true",
+        default=False,
+        help="One-shot mode: regenerate semantic embeddings from the graph, then exit",
+    )
     args = parser.parse_args()
+
+    if args.only_embedding:
+        from codebase_rag.vector_store import clean_collection
+
+        repo_path_obj = Path(args.repo_path).resolve()
+        effective_batch_size = settings.resolve_batch_size(args.batch_size)
+        logger.info(
+            "Only-embedding mode: regenerating semantic embeddings for {}",
+            repo_path_obj,
+        )
+        with MemgraphIngestor(
+            host=args.host,
+            port=args.port,
+            batch_size=effective_batch_size,
+            repo_path=repo_path_obj,
+        ) as ingestor:
+            parsers, queries = load_parsers()
+            updater = GraphUpdater(ingestor, repo_path_obj, parsers, queries)
+            try:
+                clean_collection(repo_path_obj)
+                logger.info("Cleaned existing embeddings before regeneration")
+            except Exception as exc:
+                logger.warning("Failed to clean embeddings: {}", exc)
+            updater._generate_semantic_embeddings()
+        logger.success("Embedding regeneration complete")
+        sys.exit(0)
 
     start_watcher(
         args.repo_path,

@@ -5,6 +5,7 @@ from pathlib import Path
 
 from codebase_rag.ingest_metadata import (
     METADATA_FILENAME,
+    changed_file_paths_since_ingest,
     compute_changes_since,
     read_ingest_metadata,
     summarize_ingest_status,
@@ -56,3 +57,25 @@ def test_summarize_ingest_status_without_metadata(tmp_path: Path) -> None:
     assert last_ingest is None
     assert changes["total"] >= 1
     assert path.name == METADATA_FILENAME
+
+
+def test_changed_file_paths_since_ingest_includes_added_modified_and_deleted(
+    tmp_path: Path,
+) -> None:
+    modified_file = tmp_path / "modified.txt"
+    deleted_file = tmp_path / "deleted.txt"
+    modified_file.write_text("before", encoding="utf-8")
+    deleted_file.write_text("remove", encoding="utf-8")
+    write_ingest_metadata(tmp_path)
+
+    time.sleep(1.1)
+    modified_file.write_text("after", encoding="utf-8")
+    deleted_file.unlink()
+    added_file = tmp_path / "added.txt"
+    added_file.write_text("new", encoding="utf-8")
+
+    assert changed_file_paths_since_ingest(tmp_path) == {
+        modified_file,
+        deleted_file,
+        added_file,
+    }

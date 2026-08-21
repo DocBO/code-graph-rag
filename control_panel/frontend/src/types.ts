@@ -6,6 +6,7 @@ export interface WatcherStatus {
   last_update_duration: number | null
   last_error: string | null
   log_count: number
+  embedding_in_progress: boolean
 }
 
 export interface RepoInfo {

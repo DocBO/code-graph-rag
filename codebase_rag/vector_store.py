@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import hashlib
+import time
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -17,9 +19,47 @@ class VectorStoreError(Exception):
     pass
 
 
+def _is_transient_error(exc: BaseException) -> bool:
+    """Return True for timeouts, connection failures, and server-side errors."""
+    if isinstance(exc, TimeoutError | ConnectionError):
+        return True
+    if isinstance(exc, httpx.TransportError):
+        return True
+    status = getattr(exc, "status_code", None)
+    return isinstance(status, int) and (status == 429 or status >= 500)
+
+
+def _retry_qdrant_write(
+    attempt_fn: Callable[[], None],
+    description: str,
+) -> None:
+    """Run a Qdrant write with retries and exponential backoff on transient failures."""
+    max_retries = max(settings.QDRANT_MAX_RETRIES, 0)
+    for attempt in range(max_retries + 1):
+        try:
+            attempt_fn()
+            return
+        except Exception as e:
+            if attempt >= max_retries or not _is_transient_error(e):
+                raise
+            delay = settings.QDRANT_RETRY_BACKOFF * (2**attempt)
+            logger.warning(
+                f"{description} failed (attempt {attempt + 1}/{max_retries + 1}): {e}; "
+                f"retrying in {delay:.1f}s"
+            )
+            time.sleep(delay)
+
+
+def _resolve_upsert_batch_size(total_points: int) -> int:
+    """Return a safe upsert batch size for current settings and payload size."""
+    configured = settings.QDRANT_UPSERT_BATCH_SIZE
+    if configured < 1:
+        return max(total_points, 1)
+    return configured
+
+
 def _unpack_embedding_row(
-    row:
-    tuple[int, list[float], str]
+    row: tuple[int, list[float], str]
     | tuple[int, list[float], str, str]
     | tuple[int, list[float], str, str, str],
 ) -> tuple[int, list[float], str, str | None, str | None]:
@@ -108,9 +148,12 @@ if has_qdrant_client():
                 port=settings.QDRANT_PORT,
                 api_key=settings.QDRANT_API_KEY,
                 https=settings.QDRANT_PORT == 443,
+                timeout=settings.QDRANT_TIMEOUT,
             )
         else:
-            _CLIENT = QdrantClient(path="./.qdrant_code_embeddings")
+            _CLIENT = QdrantClient(
+                path="./.qdrant_code_embeddings", timeout=settings.QDRANT_TIMEOUT
+            )
 
         return _CLIENT
 
@@ -174,10 +217,21 @@ if has_qdrant_client():
                     )
                 )
 
-            client.upsert(
-                collection_name=collection_name,
-                points=points,
-            )
+            upsert_batch_size = _resolve_upsert_batch_size(len(points))
+            for start in range(0, len(points), upsert_batch_size):
+                point_batch = points[start : start + upsert_batch_size]
+                batch_num = (start // upsert_batch_size) + 1
+                total_batches = (len(points) + upsert_batch_size - 1) // upsert_batch_size
+                _retry_qdrant_write(
+                    lambda batch=point_batch: client.upsert(
+                        collection_name=collection_name,
+                        points=batch,
+                    ),
+                    (
+                        f"Qdrant upsert batch {batch_num}/{total_batches} "
+                        f"({len(point_batch)} points) into {collection_name}"
+                    ),
+                )
         except Exception as e:
             logger.warning(
                 f"Failed to store batch of {len(embeddings_data)} embeddings: {e}"
@@ -385,9 +439,31 @@ elif _use_remote_qdrant():
             url = _build_qdrant_url(f"/collections/{collection_name}/points")
             payload = {"points": points}
 
-            resp = httpx.put(url, json=payload, headers=headers, timeout=30.0)
-            if resp.status_code >= 400:
-                logger.warning(f"Failed to store batch embeddings via HTTP: {resp.text}")
+            upsert_batch_size = _resolve_upsert_batch_size(len(points))
+            for start in range(0, len(points), upsert_batch_size):
+                point_batch = points[start : start + upsert_batch_size]
+                batch_num = (start // upsert_batch_size) + 1
+                total_batches = (len(points) + upsert_batch_size - 1) // upsert_batch_size
+
+                def _put_points(batch_points: list[dict[str, Any]] = point_batch) -> None:
+                    resp = httpx.put(
+                        url,
+                        json={"points": batch_points},
+                        headers=headers,
+                        timeout=settings.QDRANT_TIMEOUT,
+                    )
+                    if resp.status_code >= 400:
+                        raise VectorStoreError(
+                            f"Qdrant HTTP upsert failed: {resp.status_code} {resp.text}"
+                        )
+
+                _retry_qdrant_write(
+                    _put_points,
+                    (
+                        f"Qdrant HTTP upsert batch {batch_num}/{total_batches} "
+                        f"({len(point_batch)} points) into {collection_name}"
+                    ),
+                )
         except Exception as e:
             logger.warning(
                 f"Failed to store batch of {len(embeddings_data)} embeddings: {e}"

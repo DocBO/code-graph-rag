@@ -7,8 +7,6 @@ from codebase_rag.utils.dependencies import (
     get_missing_dependencies,
     has_qdrant_client,
     has_semantic_dependencies,
-    has_torch,
-    has_transformers,
 )
 
 
@@ -34,14 +32,6 @@ class TestCheckDependency:
 
 
 class TestConvenienceFunctions:
-    def test_has_torch_may_be_false(self) -> None:
-        result = has_torch()
-        assert isinstance(result, bool)
-
-    def test_has_transformers_may_be_false(self) -> None:
-        result = has_transformers()
-        assert isinstance(result, bool)
-
     def test_has_qdrant_client_may_be_false(self) -> None:
         result = has_qdrant_client()
         assert isinstance(result, bool)

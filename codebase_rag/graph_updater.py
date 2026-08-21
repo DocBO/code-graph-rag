@@ -375,7 +375,10 @@ class GraphUpdater:
 
         try:
             from .embedder import embed_code_batch
-            from .vector_store import batch_store_embeddings, delete_embeddings_for_files
+            from .vector_store import (
+                batch_store_embeddings,
+                delete_embeddings_for_files,
+            )
 
             # Convert paths to relative strings as stored in DB
             rel_paths = [str(p.relative_to(self.repo_path)) for p in file_paths]
@@ -650,7 +653,8 @@ class GraphUpdater:
 
             # Process in chunks to manage memory and provide progress updates
             chunk_size = 200  # Smaller chunks for better UI feedback
-            processed_count = 0
+            processed_items = 0
+            stored_embeddings = 0
 
             for i in range(0, total_count, chunk_size):
                 chunk = results[i : i + chunk_size]
@@ -661,34 +665,61 @@ class GraphUpdater:
                 ]
 
                 if chunk_codes:
+                    embeddings_data: list[tuple[Any, Any, str, str, str | None]] = []
                     try:
                         batch_embeddings = embed_code_batch(chunk_codes, batch_size=50)
 
-                        # Prepare data for batch storage
-                        embeddings_data = []
                         for idx, embedding in enumerate(batch_embeddings):
                             chunk_text = chunk_codes[idx]
                             node_id, qualified_name, source_path = chunk_node_info[idx]
                             embeddings_data.append(
                                 (node_id, embedding, qualified_name, chunk_text, source_path)
                             )
+                    except Exception as e:
+                        # A persistent rate limit or transient embedder failure must
+                        # not discard the whole chunk. Retry each item individually so
+                        # only genuinely failing items are skipped.
+                        logger.warning(
+                            f"  [Pass 4] Batch embed failed at {i}: {e}; "
+                            f"retrying per item for {len(chunk_codes)} items"
+                        )
+                        from .embedder import embed_code
 
-                        if embeddings_data:
+                        for idx, code in enumerate(chunk_codes):
+                            node_id, qualified_name, source_path = chunk_node_info[idx]
+                            try:
+                                embedding = embed_code(code)
+                                embeddings_data.append(
+                                    (node_id, embedding, qualified_name, code, source_path)
+                                )
+                            except Exception as item_e:
+                                logger.warning(
+                                    f"  [Pass 4] Failed to embed '{qualified_name}': {item_e}"
+                                )
+
+                    if embeddings_data:
+                        try:
                             batch_store_embeddings(
                                 embeddings_data,
                                 repo_path=self.repo_path,
                             )
+                        except Exception as store_e:
+                            logger.warning(
+                                f"  [Pass 4] Failed to store embeddings at {i}: {store_e}"
+                            )
 
-                        processed_count += len(chunk_codes)
-                        percent = (processed_count / total_count) * 100
-                        logger.info(
-                            f"  [Pass 4] Progress: {processed_count}/{total_count} ({percent:.1f}%)"
-                        )
-                    except Exception as e:
-                        logger.warning(f"  [Pass 4] Failed chunk at {i}: {e}")
+                    stored_embeddings += len(embeddings_data)
+
+                processed_items += len(chunk)
+                percent = (processed_items / total_count) * 100
+                logger.info(
+                    f"  [Pass 4] Progress: {processed_items}/{total_count} ({percent:.1f}%)"
+                    f" | embeddings stored: {stored_embeddings}"
+                )
 
             logger.info(
-                f"✓ [Pass 4] Completed semantic embedding generation ({processed_count} items)"
+                "✓ [Pass 4] Completed semantic embedding generation "
+                f"({stored_embeddings} embeddings from {processed_items} items)"
             )
 
         except Exception as e:

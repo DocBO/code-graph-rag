@@ -64,10 +64,20 @@ EMBED_ENDPOINT=https://openrouter.ai/api/v1
 EMBED_API_KEY=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
 EMBED_MODEL=qwen/qwen3-embedding-8b
 EMBED_DIMENSION=4096
+EMBED_RATE_LIMIT_RPM=60
+EMBED_MAX_RETRIES=3
+EMBED_RETRY_BACKOFF=2.0
 QDRANT_HOST=localhost
 QDRANT_PORT=6333
 QDRANT_API_KEY=
 ```
+
+### Rate limiting & retry (added 2026-08-12)
+
+- `EMBED_RATE_LIMIT_RPM` — max external embedder requests per minute (default `60`). A shared token-bucket limiter spaces requests so full re-embeds (watcher Pass 4, MCP `start_updater`, CLI `--only-embedding`) never flood the endpoint.
+- `EMBED_MAX_RETRIES` — retries on transient `429`/`5xx` responses (default `3`). The server's `Retry-After` header is honored when present, otherwise exponential backoff is used.
+- `EMBED_RETRY_BACKOFF` — base backoff seconds (default `2.0`), doubled per retry.
+- If a batch embed still fails after retries, Pass 4 falls back to per-item embedding so only genuinely failing items are skipped instead of the whole chunk.
 
 ## Files Modified
 

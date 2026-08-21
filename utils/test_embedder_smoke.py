@@ -29,7 +29,7 @@ def test_embedder():
         if settings.EMBED_DIMENSION:
             print(f"  Expected dimension: {settings.EMBED_DIMENSION}")
     else:
-        print("  Using local UniXcoder embedder (microsoft/unixcoder-base)")
+        print("  ERROR: No external embedder configured (EMBED_ENDPOINT/EMBED_MODEL)")
 
     # Sample code to embed
     sample_code = """

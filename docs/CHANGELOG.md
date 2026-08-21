@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-08-21
+
+### Root README: control-center overview ✅
+- Replaced the upstream-scale technical overview and embedded film link with a
+  concise guide to this fork's control panel, real-time watchers, unified MCP
+  endpoint, Qdrant semantic database, and local startup workflow.
+- Added explicit attribution and links to the upstream Graph-Code RAG repository
+  for parser, graph, CLI, language-support, and core implementation details.
+
 ## 2026-08-12
 
 ### Control panel: live-updating log tails ✅

@@ -1,13 +1,57 @@
-version: "3"
+version: '3.8'
+
 services:
   memgraph:
-    image: memgraph/memgraph-mage
+    image: memgraph/memgraph:latest
+    container_name: memgraph
     ports:
-      - "${MEMGRAPH_PORT:-7687}:7687"
-      - "${MEMGRAPH_HTTP_PORT:-7444}:7444"
-  lab:
-    image: memgraph/lab
-    ports:
-      - "${LAB_PORT:-3000}:3000"
+      - "7687:7687"        # Bolt protocol
+      - "7444:7444"        # Monitoring / metrics
+    command: ["--log-level=INFO", "--telemetry-enabled=false"]
+    # Cap memory so Memgraph cannot balloon past host RAM and trigger the host
+    # OOM killer (which was killing the container repeatedly, exit code 137).
+    mem_limit: 8g
+    mem_reservation: 4g
+    restart: unless-stopped
+    volumes:
+      - memgraph_data:/var/lib/memgraph
+    healthcheck:
+      test: ["CMD", "bash", "-c", "echo 'RETURN 1;' | mgconsole --host 127.0.0.1 --port 7687 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+  memgraph-lab:
+    # Correct image name for Memgraph Lab UI
+    image: memgraph/lab:latest
+    container_name: memgraph-lab
+    depends_on:
+      memgraph:
+        condition: service_healthy
     environment:
+      MG_HOST: memgraph
+      MG_PORT: 7687
+      # Backward-compatible quick connect vars (some older docs reference these)
       QUICK_CONNECT_MG_HOST: memgraph
+      QUICK_CONNECT_MG_PORT: 7687
+    ports:
+      - "3000:3000"        # Memgraph Lab UI
+
+  qdrant:
+    # image: qdrant/qdrant:latest
+    image: qdrant/qdrant:v1.16.2
+    container_name: leanrag_qdrant
+    ports:
+      - "6333:6333"  # HTTP API port
+      - "6334:6334"  # gRPC port (optional)
+    volumes:
+      - qdrant_data:/qdrant/storage
+    environment:
+      - QDRANT__SERVICE__HTTP_PORT=6333
+      - QDRANT__SERVICE__GRPC_PORT=6334
+
+volumes:
+  memgraph_data:
+  qdrant_data:
+

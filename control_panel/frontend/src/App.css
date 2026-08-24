@@ -1059,6 +1059,38 @@ body::before {
   padding: 3px 0;
 }
 
+.md-table {
+  border-collapse: collapse;
+  width: 100%;
+  margin: 10px 0;
+  font-size: 11.5px;
+}
+
+.md-table th,
+.md-table td {
+  border: 1px solid var(--line);
+  padding: 6px 10px;
+  text-align: left;
+  vertical-align: top;
+}
+
+.md-table th {
+  background: var(--panel-2);
+  color: var(--text-faint);
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  font-size: 10px;
+}
+
+.md-table td {
+  background: transparent;
+}
+
+.md-table tr:nth-child(even) td {
+  background: rgba(255, 255, 255, 0.02);
+}
+
 @media (max-width: 720px) {
   .topbar {
     flex-direction: column;

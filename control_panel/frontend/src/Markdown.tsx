@@ -47,11 +47,13 @@ interface Block {
   content?: string
   lang?: string
   items?: ListItem[]
+  rows?: string[][]
 }
 
 const OL_RE = /^\s*(\d+)\.\s+(.*)$/
 const UL_RE = /^\s*([-*+])\s+(.*)$/
 const HEADING_RE = /^\s*(#{1,6})\s+(.*)$/
+const TABLE_RE = /^\s*\|.+\|$/
 
 function parseList(lines: string[], start: number, re: RegExp): { items: ListItem[]; next: number } {
   const items: ListItem[] = []
@@ -132,6 +134,24 @@ function splitBlocks(lines: string[]): Block[] {
       i = next
       continue
     }
+    if (TABLE_RE.test(line)) {
+      const rows: string[][] = []
+      while (i < lines.length && TABLE_RE.test(lines[i])) {
+        const cells = lines[i]
+          .split('|')
+          .slice(1, -1)
+          .map((c) => c.trim())
+        // Skip separator rows (e.g. |---|---|)
+        if (!/^-{2,}$/.test(cells[0] ?? '')) {
+          rows.push(cells)
+        }
+        i++
+      }
+      if (rows.length > 0) {
+        blocks.push({ type: 'table', rows })
+      }
+      continue
+    }
     if (line.trim() === '') {
       i++
       continue
@@ -196,6 +216,23 @@ function renderBlocks(blocks: Block[]): ReactNode[] {
             <Fragment key={j}>{renderListItem(item)}</Fragment>
           ))}
         </ol>
+      )
+    }
+    if (b.type === 'table') {
+      const [head, ...body] = b.rows ?? []
+      return (
+        <table key={idx} className="md-table">
+          {head && (
+            <thead>
+              <tr>{head.map((c, ci) => <th key={ci}>{renderInline(c)}</th>)}</tr>
+            </thead>
+          )}
+          <tbody>
+            {(body.length ? body : head ? [head] : []).map((row, ri) => (
+              <tr key={ri}>{row.map((c, ci) => <td key={ci}>{renderInline(c)}</td>)}</tr>
+            ))}
+          </tbody>
+        </table>
       )
     }
     return <p key={idx}>{renderInline(b.content ?? '')}</p>

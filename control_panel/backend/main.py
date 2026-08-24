@@ -19,6 +19,7 @@ import subprocess
 import sys
 import threading
 import time
+import urllib.request
 from collections import deque
 from pathlib import Path
 from typing import Any, Literal
@@ -33,6 +34,7 @@ logger = logging.getLogger(__name__)
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 DATA_DIR = Path(__file__).resolve().parent / "data"
 REPOS_FILE = DATA_DIR / "repos.json"
+MODEL_CONFIG_PATH = Path(__file__).resolve().parent / "model_config.json"
 
 # Make the Graph-Code package importable from this backend (it lives in the
 # project root, not in control_panel/backend where uvicorn runs).
@@ -108,6 +110,79 @@ class SemanticSearchRequest(BaseModel):
     repo_path: str
     search_phrase: str
     top_n: int = 5
+
+
+class ModelSelection(BaseModel):
+    provider: str = "openrouter"
+    model: str
+
+
+class UpdateModelsRequest(BaseModel):
+    orchestrator: ModelSelection
+    cypher: ModelSelection
+
+
+# --------------------------------------------------------------------------
+# Model helpers
+# --------------------------------------------------------------------------
+
+_OPENROUTER_MODELS_URL = "https://openrouter.ai/api/v1/models"
+
+
+def _fetch_openrouter_models() -> list[dict[str, Any]]:
+    """Fetch available models from OpenRouter's public API."""
+    import ssl
+    req = urllib.request.Request(
+        _OPENROUTER_MODELS_URL,
+        headers={"Accept": "application/json", "User-Agent": "graph-code-rag/1.0"},
+    )
+    try:
+        with urllib.request.urlopen(
+            req, timeout=10, context=ssl._create_unverified_context()
+        ) as resp:
+            data = json.loads(resp.read())
+            return data.get("data", [])
+    except Exception:
+        return []
+
+
+def _load_model_config() -> dict[str, Any]:
+    """Load model filter config from model_config.json, or return empty dict."""
+    try:
+        with open(MODEL_CONFIG_PATH) as f:
+            return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
+
+
+def _build_model_options() -> list[dict[str, Any]]:
+    """Build a list of model options from OpenRouter, grouped by provider.
+
+    Applies provider/model filters from ``model_config.json`` when present.
+    """
+    models = _fetch_openrouter_models()
+    cfg = _load_model_config()
+    allowed_providers: list[str] | None = cfg.get("providers")
+    allowed_models: dict[str, list[str]] = cfg.get("models", {})
+
+    providers: dict[str, list[str]] = {}
+    for m in models:
+        model_id = m.get("id", "")
+        provider = model_id.split("/")[0] if "/" in model_id else "other"
+
+        if allowed_providers is not None and provider not in allowed_providers:
+            continue
+
+        prov_allowed = allowed_models.get(provider)
+        if prov_allowed is not None and model_id not in prov_allowed:
+            continue
+
+        providers.setdefault(provider, []).append(model_id)
+
+    return [
+        {"provider": prov, "models": sorted(ids)}
+        for prov, ids in sorted(providers.items())
+    ]
 
 
 # --------------------------------------------------------------------------
@@ -1033,6 +1108,47 @@ def root() -> dict[str, Any]:
 @app.get("/api/health")
 def health() -> dict[str, Any]:
     return {"status": "ok"}
+
+
+@app.get("/api/models")
+def list_models() -> dict[str, Any]:
+    """Return available OpenRouter models grouped by provider."""
+    options = _build_model_options()
+    return {"providers": options}
+
+
+@app.put("/api/config/models")
+def update_models(req: UpdateModelsRequest) -> dict[str, Any]:
+    """Update the active model selections for orchestrator and cypher."""
+    from codebase_rag.config import settings
+
+    # Keep the actual provider (from env / settings), not the OpenRouter
+    # sub-provider prefix from the frontend dropdown.
+    current_orch = settings.active_orchestrator_config
+    current_cyph = settings.active_cypher_config
+
+    settings.set_orchestrator(
+        provider=current_orch.provider,
+        model=req.orchestrator.model,
+        api_key=current_orch.api_key,
+        endpoint=current_orch.endpoint,
+    )
+    settings.set_cypher(
+        provider=current_cyph.provider,
+        model=req.cypher.model,
+        api_key=current_cyph.api_key,
+        endpoint=current_cyph.endpoint,
+    )
+    return {
+        "orchestrator": {
+            "provider": settings.active_orchestrator_config.provider,
+            "model": settings.active_orchestrator_config.model_id,
+        },
+        "cypher": {
+            "provider": settings.active_cypher_config.provider,
+            "model": settings.active_cypher_config.model_id,
+        },
+    }
 
 
 @app.get("/api/status")

@@ -43,6 +43,15 @@ export interface ActiveModel {
   model: string
 }
 
+export interface ModelOption {
+  provider: string
+  models: string[]
+}
+
+export interface ModelOptions {
+  providers: ModelOption[]
+}
+
 export interface ControlConfig {
   project_root: string
   memgraph: { host: string; port: number }

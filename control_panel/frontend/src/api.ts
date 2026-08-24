@@ -1,4 +1,4 @@
-import type { SemanticResult, StatusResponse } from './types'
+import type { ModelOptions, SemanticResult, StatusResponse } from './types'
 
 const BASE = '/api'
 
@@ -37,6 +37,17 @@ async function req<T>(path: string, init?: RequestInit): Promise<T> {
 
 export function fetchStatus(): Promise<StatusResponse> {
   return req('/status')
+}
+
+export function fetchModels(): Promise<ModelOptions> {
+  return req('/models')
+}
+
+export function updateModels(payload: {
+  orchestrator: { provider: string; model: string }
+  cypher: { provider: string; model: string }
+}): Promise<{ orchestrator: { provider: string; model: string }; cypher: { provider: string; model: string } }> {
+  return req('/config/models', { method: 'PUT', body: JSON.stringify(payload) })
 }
 
 export function addRepo(payload: {

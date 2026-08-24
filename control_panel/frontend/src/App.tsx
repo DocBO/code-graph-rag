@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import './App.css'
 import {
   addRepo,
+  fetchModels,
   fetchStatus,
   mcpLogs,
   mcpStart,
@@ -14,8 +15,9 @@ import {
   shutdownAll,
   startWatcher,
   stopWatcher,
+  updateModels,
 } from './api'
-import type { RepoInfo, SemanticResult, StatusResponse } from './types'
+import type { ControlConfig, ModelOption, RepoInfo, SemanticResult, StatusResponse } from './types'
 import Markdown from './Markdown'
 
 type LampTone = 'off' | 'ok' | 'busy' | 'err'
@@ -730,6 +732,219 @@ function McpPanel({
   )
 }
 
+function ModelSelector({
+  cfg,
+  onApply,
+}: {
+  cfg: ControlConfig | undefined
+  onApply: () => void
+}) {
+  const [providers, setProviders] = useState<ModelOption[]>([])
+  const [orchProvider, setOrchProvider] = useState('')
+  const [orchModel, setOrchModel] = useState('')
+  const [cypProvider, setCypProvider] = useState('')
+  const [cypModel, setCypModel] = useState('')
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+  const [saving, setSaving] = useState(false)
+  const [open, setOpen] = useState(false)
+  const [initialized, setInitialized] = useState(false)
+
+  // Fetch OpenRouter models once and initialize selector state from current config.
+  // Subsequent cfg updates from polling must NOT reset user's selection.
+  useEffect(() => {
+    if (!cfg || initialized) return
+    setLoading(true)
+    fetchModels()
+      .then((m) => {
+        setProviders(m.providers)
+        const orchFallback = m.providers[0]?.provider ?? ''
+        // Try to match current config, otherwise use fallback.
+        // The stored provider (e.g. "openrouter" from env) won't match sub-provider
+        // names in the fetched list, so also try matching by model ID.
+        const tryMatch = (prov: string, model: string): string => {
+          const exact = m.providers.find((p) => p.provider === prov)
+          if (exact) return prov
+          const lower = m.providers.find((p) => p.provider.toLowerCase() === prov.toLowerCase())
+          if (lower) return lower.provider
+          const byModel = m.providers.find((p) => p.models.includes(model))
+          return byModel?.provider ?? orchFallback
+        }
+        const matchedOrchProv = tryMatch(cfg.models.orchestrator.provider, cfg.models.orchestrator.model)
+        const matchedCypProv = tryMatch(cfg.models.cypher.provider, cfg.models.cypher.model)
+        const orchOpts = m.providers.find((p) => p.provider === matchedOrchProv)
+        const cypOpts = m.providers.find((p) => p.provider === matchedCypProv)
+        setOrchProvider(matchedOrchProv)
+        setOrchModel(
+          orchOpts?.models.includes(cfg.models.orchestrator.model)
+            ? cfg.models.orchestrator.model
+            : orchOpts?.models[0] ?? '',
+        )
+        setCypProvider(matchedCypProv)
+        setCypModel(
+          cypOpts?.models.includes(cfg.models.cypher.model)
+            ? cfg.models.cypher.model
+            : cypOpts?.models[0] ?? '',
+        )
+        setInitialized(true)
+        setError(null)
+      })
+      .catch((e) => setError(e instanceof Error ? e.message : String(e)))
+      .finally(() => setLoading(false))
+  }, [cfg, initialized])
+
+  // After apply, sync the topbar display by updating the local selection.
+  // (cfg will update via polling, but we only read it when initialized is already true)
+  // Skip syncing while the dropdown is open so polling doesn't reset user's in-progress selection.
+  useEffect(() => {
+    if (!cfg || !initialized || open) return
+    // If the server-side model changed (e.g. via another session), push it into the local state
+    // so the displayed values match, but only if the provider actually exists in the fetched list.
+    const orchOpts = providers.find((p) => p.provider === cfg.models.orchestrator.provider)
+    const cypOpts = providers.find((p) => p.provider === cfg.models.cypher.provider)
+    if (orchOpts) {
+      setOrchProvider(cfg.models.orchestrator.provider)
+      if (orchOpts.models.includes(cfg.models.orchestrator.model)) {
+        setOrchModel(cfg.models.orchestrator.model)
+      }
+    }
+    if (cypOpts) {
+      setCypProvider(cfg.models.cypher.provider)
+      if (cypOpts.models.includes(cfg.models.cypher.model)) {
+        setCypModel(cfg.models.cypher.model)
+      }
+    }
+  }, [cfg, initialized, open])
+
+  const orchModels = providers.find((p) => p.provider === orchProvider)?.models ?? []
+  const cypModels = providers.find((p) => p.provider === cypProvider)?.models ?? []
+
+  const handleApply = async () => {
+    setSaving(true)
+    try {
+      await updateModels({
+        orchestrator: { provider: orchProvider, model: orchModel },
+        cypher: { provider: cypProvider, model: cypModel },
+      })
+      onApply()
+      setOpen(false)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <div className="model-tile" style={{ position: 'relative' }}>
+      <div className="model-tile-inner" onClick={() => setOpen((v) => !v)}>
+        <span className="meta-k">ACTIVE MODELS</span>
+        <span className="model-row">
+          <span>ORCH</span>
+          <code title={cfg ? `${cfg.models.orchestrator.provider}/${cfg.models.orchestrator.model}` : ''}>
+            {cfg ? `${cfg.models.orchestrator.provider}/${cfg.models.orchestrator.model}` : '…'}
+          </code>
+        </span>
+        <span className="model-row">
+          <span>CYPHER</span>
+          <code title={cfg ? `${cfg.models.cypher.provider}/${cfg.models.cypher.model}` : ''}>
+            {cfg ? `${cfg.models.cypher.provider}/${cfg.models.cypher.model}` : '…'}
+          </code>
+        </span>
+        <span className="model-chevron">{open ? '▾' : '▸'}</span>
+      </div>
+
+      {open && (
+        <div className="model-dropdown">
+          <div className="model-dropdown-header">
+            <span className="meta-k">SELECT MODELS (OpenRouter)</span>
+            {loading && <span className="model-loading">LOADING…</span>}
+          </div>
+
+          {error && <div className="model-error">{error}</div>}
+
+          <div className="model-grid">
+            <div className="model-group">
+              <span className="meta-k">ORCHESTRATOR</span>
+              <select
+                className="input model-select"
+                value={orchProvider}
+                onChange={(e) => {
+                  const newProv = e.target.value
+                  const newModels = providers.find((p) => p.provider === newProv)?.models ?? []
+                  setOrchProvider(newProv)
+                  setOrchModel(newModels[0] ?? '')
+                }}
+              >
+                {providers.map((p) => (
+                  <option key={p.provider} value={p.provider}>
+                    {p.provider}
+                  </option>
+                ))}
+              </select>
+              <select
+                className="input model-select"
+                value={orchModel}
+                onChange={(e) => setOrchModel(e.target.value)}
+              >
+                {orchModels.map((m) => (
+                  <option key={m} value={m}>
+                    {m}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div className="model-group">
+              <span className="meta-k">CYPHER</span>
+              <select
+                className="input model-select"
+                value={cypProvider}
+                onChange={(e) => {
+                  const newProv = e.target.value
+                  const newModels = providers.find((p) => p.provider === newProv)?.models ?? []
+                  setCypProvider(newProv)
+                  setCypModel(newModels[0] ?? '')
+                }}
+              >
+                {providers.map((p) => (
+                  <option key={p.provider} value={p.provider}>
+                    {p.provider}
+                  </option>
+                ))}
+              </select>
+              <select
+                className="input model-select"
+                value={cypModel}
+                onChange={(e) => setCypModel(e.target.value)}
+              >
+                {cypModels.map((m) => (
+                  <option key={m} value={m}>
+                    {m}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
+
+          <div className="model-actions">
+            <button
+              className="btn btn-start"
+              onClick={handleApply}
+              disabled={saving || loading || !orchModel || !cypModel}
+            >
+              {saving ? 'APPLYING…' : 'APPLY & RESTART'}
+            </button>
+            <button className="btn btn-ghost" onClick={() => setOpen(false)}>
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
 export default function App() {
   const [status, setStatus] = useState<StatusResponse | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -860,17 +1075,10 @@ export default function App() {
           </h1>
         </div>
         <div className="topbar-right">
-          <div className="model-tile" title="Models used for RAG orchestration and Cypher generation">
-            <span className="meta-k">ACTIVE MODELS</span>
-            <span className="model-row">
-              <span>ORCH</span>
-              <code>{cfg ? `${cfg.models.orchestrator.provider}/${cfg.models.orchestrator.model}` : '…'}</code>
-            </span>
-            <span className="model-row">
-              <span>CYPHER</span>
-              <code>{cfg ? `${cfg.models.cypher.provider}/${cfg.models.cypher.model}` : '…'}</code>
-            </span>
-          </div>
+          <ModelSelector
+            cfg={cfg}
+            onApply={refresh}
+          />
           <span
             className={`sys chip chip-mg${!status?.memgraph?.alive ? ' chip-mg-err' : ''}`}
           >

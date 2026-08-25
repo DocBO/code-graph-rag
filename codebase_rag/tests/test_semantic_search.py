@@ -6,10 +6,23 @@ from codebase_rag.tools.semantic_search import (
     SemanticSearchOutcome,
     SemanticSearchStatus,
     semantic_code_search_outcome,
+    semantic_match_label,
 )
 
 
 class TestSemanticSearchOutcome:
+    def test_labels_markdown_matches_with_their_file_path(self) -> None:
+        assert (
+            semantic_match_label(
+                {
+                    "node_id": 42,
+                    "qualified_name": None,
+                    "file_path": "docs/E2E_FRONTEND_MIMIC.md",
+                }
+            )
+            == "docs/E2E_FRONTEND_MIMIC.md"
+        )
+
     def test_no_dependencies_status_when_extra_missing(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:

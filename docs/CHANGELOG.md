@@ -2,6 +2,20 @@
 
 ## [Unreleased]
 
+### 🏷️ Label Markdown semantic matches by source (2026-08-25)
+
+**Status**: COMPLETED
+**Scope**: CLI and agent semantic-search result rendering
+**Verification**: Focused semantic-search tests
+
+#### Changes
+
+- Markdown `File` matches now display their Qdrant source path when no graph qualified name exists.
+
+#### Migration / Operational Notes
+
+- None.
+
 ### 🧭 Align general queries with focused semantic retrieval (2026-08-25)
 
 **Status**: COMPLETED

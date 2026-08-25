@@ -30,6 +30,15 @@ class SemanticSearchOutcome:
     message: str
 
 
+def semantic_match_label(match: dict[str, Any]) -> str:
+    """Return a human-readable label for API and Markdown semantic matches."""
+    return str(
+        match.get("qualified_name")
+        or match.get("file_path")
+        or f"node:{match.get('node_id', 'unknown')}"
+    )
+
+
 def _normalize_repo_path(repo_path: str | None) -> str | None:
     if repo_path is None:
         return None
@@ -449,7 +458,8 @@ def create_semantic_search_tool(repo_path: str | None = None) -> Tool:
         formatted_results = []
         for i, result in enumerate(results, 1):
             formatted_results.append(
-                f"{i}. {result['qualified_name']} (type: {result['type']}, score: {result['score']})"
+                f"{i}. {semantic_match_label(result)} "
+                f"(type: {result['type']}, score: {result['score']})"
             )
 
         response = f"Found {len(results)} semantic matches for '{query}':\n\n"

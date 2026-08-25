@@ -64,7 +64,10 @@ def create_enhanced_semantic_search_tool(
 
         try:
             # Use async version since we're in an async context
-            from .semantic_search import semantic_code_search_outcome_async
+            from .semantic_search import (
+                semantic_code_search_outcome_async,
+                semantic_match_label,
+            )
 
             outcome = await semantic_code_search_outcome_async(query, top_k)
 
@@ -96,14 +99,15 @@ def create_enhanced_semantic_search_tool(
             response_lines = [f"Found {len(results)} semantic matches:\n"]
 
             for i, result in enumerate(results, 1):
+                label = semantic_match_label(result)
                 table.add_row(
                     str(i),
-                    result["qualified_name"],
+                    label,
                     result["type"],
                     f"{result['score']:.3f}",
                 )
                 response_lines.append(
-                    f"{i}. {result['qualified_name']} ({result['type']}) - Score: {result['score']:.3f}"
+                    f"{i}. {label} ({result['type']}) - Score: {result['score']:.3f}"
                 )
 
             # Display the table in console

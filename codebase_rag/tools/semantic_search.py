@@ -409,10 +409,12 @@ def create_semantic_search_tool(repo_path: str | None = None) -> Tool:
 
     async def semantic_search_functions(query: str, top_k: int = 5) -> str:
         """
-        Search for functions/methods using natural language descriptions of their purpose.
+        Search Python classes, functions, and methods using their names and
+        docstrings, plus matching Markdown documentation.
 
-        Use this tool when you need to find code that performs specific functionality
-        based on intent rather than exact names. Perfect for questions like:
+        Use this tool for Python API or documentation discovery by intent rather
+        than exact names. It does not search implementation bodies or non-Python
+        source text. Perfect for questions like:
         - "Find error handling functions"
         - "Show me authentication-related code"
         - "Where is data validation implemented?"

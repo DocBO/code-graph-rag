@@ -2,6 +2,20 @@
 
 ## [Unreleased]
 
+### 🧭 Align general queries with focused semantic retrieval (2026-08-25)
+
+**Status**: COMPLETED
+**Scope**: RAG prompts and semantic-search tool guidance
+**Verification**: 24 focused prompt, runtime, and semantic-search tests passed; Ruff check and formatting; `git diff --check`
+
+#### Changes
+
+- General codebase queries now treat Qdrant as Python API/docstring and Markdown discovery, and use Memgraph/source reading for implementation bodies, non-Python code, and structure.
+
+#### Migration / Operational Notes
+
+- Restart the MCP or control-panel backend to load the updated query guidance; no re-embedding is required.
+
 ### 📖 Clarify focused Qdrant embedding scope (2026-08-25)
 
 **Status**: COMPLETED

@@ -6,6 +6,10 @@ from codebase_rag.prompts import (
     GRAPH_SCHEMA_AND_RULES,
     LOCAL_CYPHER_SYSTEM_PROMPT,
     RAG_ORCHESTRATOR_SYSTEM_PROMPT,
+    RAG_READ_ONLY_SYSTEM_PROMPT,
+)
+from codebase_rag.tools.enhanced_semantic_search import (
+    create_enhanced_semantic_search_tool,
 )
 
 
@@ -82,7 +86,18 @@ class TestRagOrchestratorSystemPrompt:
         assert "TOOL-ONLY ANSWERS" in RAG_ORCHESTRATOR_SYSTEM_PROMPT
 
     def test_contains_semantic_first_strategy(self) -> None:
-        assert "SEMANTIC FIRST" in RAG_ORCHESTRATOR_SYSTEM_PROMPT
+        assert "SEMANTIC SEARCH FIRST" in RAG_ORCHESTRATOR_SYSTEM_PROMPT
 
     def test_contains_hybrid_approach(self) -> None:
         assert "HYBRID APPROACH" in RAG_ORCHESTRATOR_SYSTEM_PROMPT
+
+    def test_describes_focused_qdrant_corpus_in_both_query_prompts(self) -> None:
+        for prompt in (RAG_ORCHESTRATOR_SYSTEM_PROMPT, RAG_READ_ONLY_SYSTEM_PROMPT):
+            assert "Python names/docstrings and Markdown chunks only" in prompt
+            assert "a Qdrant miss does not mean the code is absent" in prompt
+
+    def test_semantic_tool_describes_focused_corpus(self) -> None:
+        tool = create_enhanced_semantic_search_tool(repo_path="/tmp/repo")
+        assert (
+            "Python API names/docstrings and Markdown documentation" in tool.description
+        )

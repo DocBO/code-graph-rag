@@ -128,5 +128,9 @@ def create_enhanced_semantic_search_tool(
     return Tool(
         enhanced_semantic_search,
         name="semantic_search_by_intent",
-        description="Search for code by natural language intent using semantic embeddings from Qdrant",
+        description=(
+            "Search Python API names/docstrings and Markdown documentation by "
+            "natural-language intent using focused Qdrant embeddings; it does not "
+            "search implementation bodies or non-Python source text."
+        ),
     )

@@ -107,10 +107,28 @@ body::before {
 
 .topbar-right {
   display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 6px;
+}
+
+.topbar-right-top {
+  display: flex;
   align-items: center;
   gap: 10px;
   flex-wrap: wrap;
   justify-content: flex-end;
+}
+
+.topbar-right-bottom {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.stack-chips {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
 }
 
 .model-tile {
@@ -346,6 +364,17 @@ body::before {
   background: var(--panel-2);
   color: var(--text-dim);
   white-space: nowrap;
+}
+
+.badge-clickable {
+  cursor: pointer;
+  transition: all 0.15s ease;
+  border-color: rgba(255, 92, 92, 0.4);
+}
+
+.badge-clickable:hover {
+  background: rgba(255, 92, 92, 0.12);
+  border-color: var(--red);
 }
 
 .badge-running {
@@ -792,6 +821,12 @@ body::before {
   align-self: flex-end;
 }
 
+.query-stop {
+  align-self: flex-end;
+  font-size: 11px;
+  padding: 5px 14px;
+}
+
 .query-controls {
   display: flex;
   align-items: flex-end;
@@ -1098,6 +1133,17 @@ body::before {
   }
 
   .topbar-right {
+    width: 100%;
+    align-items: stretch;
+  }
+
+  .topbar-right-top {
+    width: 100%;
+    justify-content: flex-start;
+    flex-wrap: wrap;
+  }
+
+  .topbar-right-bottom {
     width: 100%;
     justify-content: flex-start;
   }

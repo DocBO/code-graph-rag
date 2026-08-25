@@ -325,7 +325,7 @@ if has_qdrant_client():
             logger.info(f"Cleaning Qdrant collection: {collection_name}")
             client.delete(
                 collection_name=collection_name,
-                points_selector=None,  # Delete all points
+                points_selector=Filter(),
             )
             logger.info(f"Qdrant collection cleaned: {collection_name}")
         except Exception as e:

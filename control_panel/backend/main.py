@@ -857,6 +857,9 @@ class RepoManager:
         # should re-ingest the whole repository.
         no_update = not full_scan
 
+        if full_scan:
+            self._cleanup_repo_databases(key)
+
         cmd = [
             "uv",
             "run",

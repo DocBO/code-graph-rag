@@ -124,9 +124,11 @@ export function runQuery(
   repoPath: string,
   question: string,
   searchDepth: 'shallow' | 'normal' | 'deep' = 'normal',
+  signal?: AbortSignal,
 ): Promise<QueryResult> {
   return req('/query', {
     method: 'POST',
+    signal,
     body: JSON.stringify({
       repo_path: repoPath,
       question,

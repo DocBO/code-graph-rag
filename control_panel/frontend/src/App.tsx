@@ -268,6 +268,7 @@ function QueryPanel({
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [copied, setCopied] = useState(false)
+  const abortRef = useRef<AbortController | null>(null)
 
   useEffect(() => {
     if (repos.length > 0 && !repos.some((r) => r.path === repoPath)) {
@@ -280,15 +281,26 @@ function QueryPanel({
     setBusy(true)
     setError(null)
     setResult(null)
+    const ctrl = new AbortController()
+    abortRef.current = ctrl
     try {
-      const res = await runQuery(repoPath, question.trim(), searchDepth)
+      const res = await runQuery(repoPath, question.trim(), searchDepth, ctrl.signal)
       setResult(res.response)
       setResultDepth(res.search_depth)
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e))
+      if (e instanceof DOMException && e.name === 'AbortError') {
+        setError('Query cancelled')
+      } else {
+        setError(e instanceof Error ? e.message : String(e))
+      }
     } finally {
       setBusy(false)
+      abortRef.current = null
     }
+  }
+
+  const stop = () => {
+    abortRef.current?.abort()
   }
 
   const copy = async () => {
@@ -314,9 +326,13 @@ function QueryPanel({
             <code className="card-path">ask the knowledge graph anything</code>
           </div>
         </div>
-        <span className={`badge badge-${busy ? 'updating' : 'stopped'}`}>
-          {busy ? 'THINKING…' : 'READY'}
-        </span>
+<span
+  className={`badge badge-${busy ? 'updating' : 'stopped'}${busy ? ' badge-clickable' : ''}`}
+  onClick={busy ? stop : undefined}
+  title={busy ? 'Click to stop thinking' : ''}
+>
+  {busy ? 'THINKING… (click to stop)' : 'READY'}
+</span>
       </header>
 
       <div className="query-form">
@@ -365,6 +381,11 @@ function QueryPanel({
           >
             {busy ? 'Querying…' : 'Run query'}
           </button>
+          {busy && (
+            <button className="btn btn-stopall query-stop" onClick={stop}>
+              Stop
+            </button>
+          )}
         </div>
       </div>
 
@@ -1075,40 +1096,42 @@ export default function App() {
           </h1>
         </div>
         <div className="topbar-right">
-          <ModelSelector
-            cfg={cfg}
-            onApply={refresh}
-          />
-          <span
-            className={`sys chip chip-mg${!status?.memgraph?.alive ? ' chip-mg-err' : ''}`}
-          >
-            <StatusLamp tone={status?.memgraph?.alive ? 'ok' : 'err'} pulse={!status?.memgraph} />
-            <span className="meta-k">MEMGRAPH</span>
-            {cfg ? `${cfg.memgraph.host}:${cfg.memgraph.port}` : '…'}
-            <span className="chip-state">
-              {!status?.memgraph
-                ? '…'
-                : status.memgraph.alive
-                  ? 'ALIVE'
-                  : 'DOWN'}
-            </span>
-          </span>
-          <span className="sys chip">
-            <span className="meta-k">PROJECT</span>
-            <span className="meta-ellipsis">{cfg?.project_root ?? '…'}</span>
-          </span>
-          <button
-            className="btn btn-stopall"
-            onClick={stopAll}
-            disabled={shuttingDown}
-            title="Stop all watchers, the MCP server, and the control panel API"
-          >
-            {shuttingDown ? 'Stopping…' : 'Stop all'}
-          </button>
-          <span className={`conn${error ? ' conn-err' : ''}`}>
-            <StatusLamp tone={error ? 'err' : 'ok'} pulse={!status} />
-            {error ? 'API ERROR' : status ? 'LINKED' : 'CONNECTING…'}
-          </span>
+          <div className="topbar-right-top">
+            <ModelSelector
+              cfg={cfg}
+              onApply={refresh}
+            />
+            <div className="stack-chips">
+              <span
+                className={`sys chip chip-mg${!status?.memgraph?.alive ? ' chip-mg-err' : ''}`}
+              >
+                <StatusLamp tone={status?.memgraph?.alive ? 'ok' : 'err'} pulse={!status?.memgraph} />
+                <span className="meta-k">MEMGRAPH</span>
+                {cfg ? `${cfg.memgraph.host}:${cfg.memgraph.port}` : '…'}
+                <span className="chip-state">
+                  {!status?.memgraph
+                    ? '…'
+                    : status.memgraph.alive
+                      ? 'ALIVE'
+                      : 'DOWN'}
+                </span>
+              </span>
+              <span className={`conn${error ? ' conn-err' : ''}`}>
+                <StatusLamp tone={error ? 'err' : 'ok'} pulse={!status} />
+                {error ? 'API ERROR' : status ? 'LINKED' : 'CONNECTING…'}
+              </span>
+            </div>
+          </div>
+          <div className="topbar-right-bottom">
+            <button
+              className="btn btn-stopall"
+              onClick={stopAll}
+              disabled={shuttingDown}
+              title="Stop all watchers, the MCP server, and the control panel API"
+            >
+              {shuttingDown ? 'Stopping…' : 'Stop all'}
+            </button>
+          </div>
         </div>
       </header>
 

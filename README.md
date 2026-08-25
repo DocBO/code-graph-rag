@@ -90,7 +90,10 @@ For parameters and response contracts, see [docs/mcp-tools.md](docs/mcp-tools.md
 - **Qdrant** stores semantic embeddings used by quick semantic retrieval and
   semantic context for codebase queries. Configure a remote instance with
   `QDRANT_HOST`, `QDRANT_PORT`, and `QDRANT_API_KEY`; without a host, Graph-Code
-  uses a local on-disk Qdrant collection.
+  uses a local on-disk Qdrant collection. Its corpus is deliberately focused:
+  Python class, function, and method names with available docstrings, plus
+  chunked Markdown; implementation bodies and other source-file contents remain
+  available through Memgraph rather than being embedded in Qdrant.
 
 ## Operations Notes
 

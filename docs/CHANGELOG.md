@@ -2,6 +2,20 @@
 
 ## [Unreleased]
 
+### 📖 Clarify focused Qdrant embedding scope (2026-08-25)
+
+**Status**: COMPLETED
+**Scope**: Root README
+**Verification**: Markdown review and `git diff --check`
+
+#### Changes
+
+- Documented that Qdrant embeds Python API names/docstrings and chunked Markdown, while Memgraph retains full source-structure coverage.
+
+#### Migration / Operational Notes
+
+- None.
+
 ### 🧾 Label Markdown matches by source path (2026-08-25)
 
 **Status**: COMPLETED

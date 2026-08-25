@@ -1,4 +1,6 @@
+import ast
 import sys
+import textwrap
 from collections import OrderedDict, defaultdict
 from collections.abc import ItemsView, KeysView
 from pathlib import Path
@@ -16,16 +18,7 @@ from .utils.dependencies import has_semantic_dependencies
 from .utils.fqn_resolver import find_function_source_by_fqn
 from .utils.source_extraction import extract_source_with_fallback
 
-SEMANTIC_ASSET_EXTENSIONS = {
-    ".css",
-    ".html",
-    ".htm",
-    ".less",
-    ".sass",
-    ".scss",
-    ".svelte",
-    ".vue",
-}
+SEMANTIC_MARKDOWN_EXTENSION = ".md"
 
 
 class FunctionRegistryTrie:
@@ -387,12 +380,14 @@ class GraphUpdater:
             # regenerating to keep Qdrant aligned with current file state.
             delete_embeddings_for_files(rel_paths, repo_path=self.repo_path)
 
-            # Query database for symbols in these files.
+            # Query only Python symbols. Memgraph continues to contain symbols
+            # from every supported language; this restriction is Qdrant-only.
             placeholders = ", ".join(f"${i}" for i in range(len(rel_paths)))
             symbol_query = f"""
             MATCH (m:Module)-[:DEFINES|CONTAINS*..5]->(n)
             WHERE (n:Function OR n:Method OR n:Class)
               AND m.path IN [{placeholders}]
+              AND m.path ENDS WITH '.py'
               AND n._repo_path = $repo_path
             RETURN id(n) AS node_id, n.qualified_name AS qualified_name,
                    n.start_line AS start_line, n.end_line AS end_line,
@@ -404,22 +399,20 @@ class GraphUpdater:
 
             results = self.ingestor._execute_query(symbol_query, params)
 
-            # Include complete parseable modules and frontend assets. Module-level
-            # JSX/template text and CSS selectors often live outside named symbols.
+            # Markdown is the only file content stored in Qdrant. Its File node
+            # supplies the stable graph node ID used by semantic-search results.
             file_query = f"""
             MATCH (n)
             WHERE n._repo_path = $repo_path
               AND n.path IN [{placeholders}]
-              AND (
-                n:Module
-                OR (n:File AND n.extension IN $asset_extensions)
-              )
+              AND n:File
+              AND n.extension = $markdown_extension
             RETURN id(n) AS node_id, n.qualified_name AS qualified_name,
                    null AS start_line, null AS end_line,
                    n.path AS path, labels(n)[0] AS node_type
             """
             file_params = dict(params)
-            file_params["asset_extensions"] = sorted(SEMANTIC_ASSET_EXTENSIONS)
+            file_params["markdown_extension"] = SEMANTIC_MARKDOWN_EXTENSION
             results.extend(self.ingestor._execute_query(file_query, file_params))
 
             if not results:
@@ -451,9 +444,17 @@ class GraphUpdater:
 
                     batch_data = []
                     for idx, embedding in enumerate(batch_embeddings):
-                        chunk_text, node_id, qualified_name, source_path = batch_chunks[idx]
+                        chunk_text, node_id, qualified_name, source_path = batch_chunks[
+                            idx
+                        ]
                         batch_data.append(
-                            (node_id, embedding, qualified_name, chunk_text, source_path)
+                            (
+                                node_id,
+                                embedding,
+                                qualified_name,
+                                chunk_text,
+                                source_path,
+                            )
                         )
 
                     if batch_data:
@@ -593,7 +594,7 @@ class GraphUpdater:
             )
 
     def _generate_semantic_embeddings(self) -> None:
-        """Generate embeddings for symbols, modules, and frontend assets."""
+        """Generate Qdrant embeddings for Python API descriptions and Markdown."""
         logger.info("--- Starting Pass 4: Generating semantic embeddings ---")
 
         if not has_semantic_dependencies():
@@ -618,25 +619,27 @@ class GraphUpdater:
                     exc,
                 )
 
-            # Symbols alone miss common frontend behavior stored in top-level JSX,
-            # templates, and styles. Include parseable modules and frontend assets.
+            # Memgraph remains language-agnostic. Qdrant intentionally stores a
+            # concise semantic corpus: Python names/docstrings and Markdown.
             query = """
             MATCH (n)
             WHERE n._repo_path = $repo_path
-              AND (
-                n:Function OR n:Method OR n:Class OR n:Module
-                OR (n:File AND n.extension IN $asset_extensions)
-              )
             OPTIONAL MATCH (m:Module)-[:DEFINES|CONTAINS*..5]->(n)
+            WITH n, m, coalesce(m.path, n.path) AS path
+            WHERE (
+                (n:Function OR n:Method OR n:Class) AND path ENDS WITH '.py'
+            ) OR (
+                n:File AND n.extension = $markdown_extension
+            )
             RETURN DISTINCT id(n) AS node_id, n.qualified_name AS qualified_name,
                    n.start_line AS start_line, n.end_line AS end_line,
-                   coalesce(m.path, n.path) AS path,
+                   path AS path,
                    labels(n)[0] AS node_type
             """
 
             params = {
                 "repo_path": str(self.repo_path),
-                "asset_extensions": sorted(SEMANTIC_ASSET_EXTENSIONS),
+                "markdown_extension": SEMANTIC_MARKDOWN_EXTENSION,
             }
             logger.info("  [Pass 4] Fetching semantic content from Memgraph...")
 
@@ -673,7 +676,13 @@ class GraphUpdater:
                             chunk_text = chunk_codes[idx]
                             node_id, qualified_name, source_path = chunk_node_info[idx]
                             embeddings_data.append(
-                                (node_id, embedding, qualified_name, chunk_text, source_path)
+                                (
+                                    node_id,
+                                    embedding,
+                                    qualified_name,
+                                    chunk_text,
+                                    source_path,
+                                )
                             )
                     except Exception as e:
                         # A persistent rate limit or transient embedder failure must
@@ -690,7 +699,13 @@ class GraphUpdater:
                             try:
                                 embedding = embed_code(code)
                                 embeddings_data.append(
-                                    (node_id, embedding, qualified_name, code, source_path)
+                                    (
+                                        node_id,
+                                        embedding,
+                                        qualified_name,
+                                        code,
+                                        source_path,
+                                    )
                                 )
                             except Exception as item_e:
                                 logger.warning(
@@ -748,7 +763,7 @@ class GraphUpdater:
     def _prepare_embedding_chunks(
         self, results: list[dict[str, Any]]
     ) -> list[tuple[str, int, str, str | None]]:
-        """Build searchable chunks with file and entity context."""
+        """Build Qdrant documents for Python APIs and Markdown only."""
         prepared: list[tuple[str, int, str, str | None]] = []
         for result in results:
             node_id = result["node_id"]
@@ -758,9 +773,13 @@ class GraphUpdater:
                 f"file:{path}" if path else f"node:{node_id}"
             )
 
-            if node_type in {"Module", "File"}:
+            suffix = Path(path).suffix.lower() if path else ""
+            if node_type == "File" and suffix == SEMANTIC_MARKDOWN_EXTENSION:
                 source_code = self._read_semantic_file(path)
-            else:
+                if not source_code:
+                    continue
+                document = f"Markdown file: {path}\n\n{source_code}"
+            elif node_type in {"Function", "Method", "Class"} and suffix == ".py":
                 source_code = self._extract_source_code(
                     qualified_name,
                     path,
@@ -768,19 +787,38 @@ class GraphUpdater:
                     result.get("end_line"),
                 )
 
-            if not source_code:
+                if not source_code:
+                    continue
+                document = self._python_symbol_document(
+                    qualified_name, node_type, source_code
+                )
+            else:
                 continue
-
-            document = (
-                f"Entity: {qualified_name}\n"
-                f"Type: {node_type}\n"
-                f"File: {path or 'unknown'}\n\n"
-                f"{source_code}"
-            )
-            prepared.extend(
-                self._chunk_code(document, node_id, qualified_name, path)
-            )
+            prepared.extend(self._chunk_code(document, node_id, qualified_name, path))
         return prepared
+
+    @staticmethod
+    def _python_symbol_document(
+        qualified_name: str, node_type: str, source_code: str
+    ) -> str:
+        """Create an embedding document without including Python implementation."""
+        document = f"Python {node_type}: {qualified_name}"
+        docstring = GraphUpdater._extract_python_docstring(source_code)
+        if docstring:
+            document += f"\n\n{docstring}"
+        return document
+
+    @staticmethod
+    def _extract_python_docstring(source_code: str) -> str | None:
+        """Return a symbol docstring from its extracted source, when parseable."""
+        try:
+            module = ast.parse(textwrap.dedent(source_code))
+        except SyntaxError:
+            return None
+        for node in module.body:
+            if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef):
+                return ast.get_docstring(node, clean=True)
+        return None
 
     def _read_semantic_file(self, file_path: str | None) -> str | None:
         if not file_path:

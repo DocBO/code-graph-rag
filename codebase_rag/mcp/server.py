@@ -141,7 +141,9 @@ class TransportLoggingMiddleware:
 
         dur_ms = int((time.time() - started_at) * 1000)
         final_status = status_code if status_code is not None else 0
-        logger.info(f"[MCP HTTP] REQ {req_id} END status={final_status} dur_ms={dur_ms}")
+        logger.info(
+            f"[MCP HTTP] REQ {req_id} END status={final_status} dur_ms={dur_ms}"
+        )
 
 
 def _build_tool_schema(name: str) -> dict[str, Any]:
@@ -684,6 +686,7 @@ class GraphCodeMCPContext:
             )
 
             location = location_rows[0] if location_rows else {}
+            filename = location.get("filename") or match.get("file_path")
             snippet = match.get("chunk_text")
             if not snippet:
                 source_code = get_function_source_code(
@@ -693,7 +696,7 @@ class GraphCodeMCPContext:
                     document = (
                         f"Entity: {match.get('qualified_name') or f'node:{node_id}'}\n"
                         f"Type: {match.get('type') or 'Code'}\n"
-                        f"File: {location.get('filename') or 'unknown'}\n\n"
+                        f"File: {filename or 'unknown'}\n\n"
                         f"{source_code}"
                     )
                     chunk_index = self._chunk_index_from_match(
@@ -706,7 +709,7 @@ class GraphCodeMCPContext:
                     "qualified_name": match.get("qualified_name"),
                     "type": match.get("type"),
                     "score": match.get("score"),
-                    "filename": location.get("filename"),
+                    "filename": filename,
                     "start_line": location.get("start_line"),
                     "end_line": location.get("end_line"),
                     "snippet": snippet,

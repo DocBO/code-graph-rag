@@ -44,9 +44,7 @@ class TestSemanticSearchOutcome:
         assert outcome.matches == []
         assert "embedder exploded" in outcome.message
 
-    def test_ok_status_with_matches(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_ok_status_with_matches(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(
             "codebase_rag.tools.semantic_search.has_semantic_dependencies",
             lambda: True,
@@ -58,7 +56,12 @@ class TestSemanticSearchOutcome:
         monkeypatch.setattr(
             "codebase_rag.vector_store.search_embedding_matches",
             lambda query_embedding, top_k, repo_path: [
-                {"node_id": 42, "score": 0.91, "matched_qualified_name": "x"},
+                {
+                    "node_id": 42,
+                    "score": 0.91,
+                    "matched_qualified_name": "x",
+                    "file_path": "docs/authentication.md",
+                },
             ],
         )
 
@@ -85,3 +88,4 @@ class TestSemanticSearchOutcome:
         assert len(outcome.matches) == 1
         assert outcome.matches[0]["qualified_name"] == "pkg.auth.login"
         assert outcome.matches[0]["score"] == 0.91
+        assert outcome.matches[0]["file_path"] == "docs/authentication.md"

@@ -35,7 +35,10 @@ def _normalize_repo_path(repo_path: str | None) -> str | None:
         return None
     return str(Path(repo_path).expanduser().resolve())
 
-def semantic_code_search(query: str, top_k: int = 5, repo_path: str | None = None) -> list[dict[str, Any]]:
+
+def semantic_code_search(
+    query: str, top_k: int = 5, repo_path: str | None = None
+) -> list[dict[str, Any]]:
     """
     Synchronous version of semantic search.
     Use this when calling from sync contexts.
@@ -59,7 +62,9 @@ def semantic_code_search_outcome(
     - ``FAILED``: an infrastructure or query error occurred
     """
     if not has_semantic_dependencies():
-        logger.warning("Semantic search requires 'semantic' extra: uv sync --extra semantic")
+        logger.warning(
+            "Semantic search requires 'semantic' extra: uv sync --extra semantic"
+        )
         return SemanticSearchOutcome(
             status=SemanticSearchStatus.NO_DEPENDENCIES,
             matches=[],
@@ -102,7 +107,11 @@ def semantic_code_search_outcome(
             )
 
         # Extract node_ids for database query
-        node_ids = [int(hit["node_id"]) for hit in search_results if hit.get("node_id") is not None]
+        node_ids = [
+            int(hit["node_id"])
+            for hit in search_results
+            if hit.get("node_id") is not None
+        ]
 
         # Query Memgraph for node details using read-only helper (no context manager)
         # Build the query with repo_path filter
@@ -122,7 +131,7 @@ def semantic_code_search_outcome(
             host=settings.MEMGRAPH_HOST,
             port=settings.MEMGRAPH_PORT,
             query=cypher_query,
-            params=params
+            params=params,
         )
 
         # Create O(1) lookup map for graph results
@@ -135,15 +144,22 @@ def semantic_code_search_outcome(
             score = float(hit["score"])
             if node_id in results_map:
                 result = results_map[node_id]
-                formatted_results.append({
-                    "node_id": node_id,
-                    "qualified_name": result["qualified_name"],
-                    "name": result["name"],
-                    "type": result["type"][0] if result["type"] else "Unknown",
-                    "score": round(score, 3),  # Use real similarity score from Qdrant
-                    "matched_chunk_qualified_name": hit.get("matched_qualified_name"),
-                    "chunk_text": hit.get("chunk_text"),
-                })
+                formatted_results.append(
+                    {
+                        "node_id": node_id,
+                        "qualified_name": result["qualified_name"],
+                        "name": result["name"],
+                        "type": result["type"][0] if result["type"] else "Unknown",
+                        "score": round(
+                            score, 3
+                        ),  # Use real similarity score from Qdrant
+                        "matched_chunk_qualified_name": hit.get(
+                            "matched_qualified_name"
+                        ),
+                        "chunk_text": hit.get("chunk_text"),
+                        "file_path": hit.get("file_path"),
+                    }
+                )
 
         logger.info(f"Found {len(formatted_results)} semantic matches for: {query}")
         return SemanticSearchOutcome(
@@ -161,15 +177,17 @@ def semantic_code_search_outcome(
         )
 
 
-async def semantic_code_search_async(query: str, top_k: int = 5, repo_path: str | None = None) -> list[dict[str, Any]]:
+async def semantic_code_search_async(
+    query: str, top_k: int = 5, repo_path: str | None = None
+) -> list[dict[str, Any]]:
     """
     Async version of semantic search.
     Use this when calling from async contexts (e.g., pydantic_ai tools).
-    
+
     Args:
         query: Natural language description of desired functionality
         top_k: Number of results to return
-        
+
     Returns:
         List of dictionaries with node information:
         [
@@ -200,7 +218,9 @@ async def semantic_code_search_outcome_async(
     - ``FAILED``: an infrastructure or query error occurred
     """
     if not has_semantic_dependencies():
-        logger.warning("Semantic search requires 'semantic' extra: uv sync --extra semantic")
+        logger.warning(
+            "Semantic search requires 'semantic' extra: uv sync --extra semantic"
+        )
         return SemanticSearchOutcome(
             status=SemanticSearchStatus.NO_DEPENDENCIES,
             matches=[],
@@ -243,7 +263,11 @@ async def semantic_code_search_outcome_async(
             )
 
         # Extract node_ids for database query
-        node_ids = [int(hit["node_id"]) for hit in search_results if hit.get("node_id") is not None]
+        node_ids = [
+            int(hit["node_id"])
+            for hit in search_results
+            if hit.get("node_id") is not None
+        ]
 
         # Query Memgraph for node details using read-only helper (no context manager)
         # Build the query with repo_path filter
@@ -263,7 +287,7 @@ async def semantic_code_search_outcome_async(
             host=settings.MEMGRAPH_HOST,
             port=settings.MEMGRAPH_PORT,
             query=cypher_query,
-            params=params
+            params=params,
         )
 
         # Create O(1) lookup map for graph results
@@ -276,15 +300,22 @@ async def semantic_code_search_outcome_async(
             score = float(hit["score"])
             if node_id in results_map:
                 result = results_map[node_id]
-                formatted_results.append({
-                    "node_id": node_id,
-                    "qualified_name": result["qualified_name"],
-                    "name": result["name"],
-                    "type": result["type"][0] if result["type"] else "Unknown",
-                    "score": round(score, 3),  # Use real similarity score from Qdrant
-                    "matched_chunk_qualified_name": hit.get("matched_qualified_name"),
-                    "chunk_text": hit.get("chunk_text"),
-                })
+                formatted_results.append(
+                    {
+                        "node_id": node_id,
+                        "qualified_name": result["qualified_name"],
+                        "name": result["name"],
+                        "type": result["type"][0] if result["type"] else "Unknown",
+                        "score": round(
+                            score, 3
+                        ),  # Use real similarity score from Qdrant
+                        "matched_chunk_qualified_name": hit.get(
+                            "matched_qualified_name"
+                        ),
+                        "chunk_text": hit.get("chunk_text"),
+                        "file_path": hit.get("file_path"),
+                    }
+                )
 
         logger.info(f"Found {len(formatted_results)} semantic matches for: {query}")
         return SemanticSearchOutcome(
@@ -305,22 +336,25 @@ async def semantic_code_search_outcome_async(
 def get_function_source_code(node_id: int, repo_path: str | None = None) -> str | None:
     """
     Retrieve source code for a function/method by node ID.
-    
+
     Args:
         node_id: Memgraph node ID
         repo_path: Repository path for filtering (optional, uses context or settings fallback)
-        
+
     Returns:
         Source code string or None if not found
     """
     try:
         from ..services.graph_service import execute_read_query
         from ..config import settings
-        from ..utils.source_extraction import extract_source_lines, validate_source_location
-        
+        from ..utils.source_extraction import (
+            extract_source_lines,
+            validate_source_location,
+        )
+
         # Fallback chain: parameter > context > env var
         effective_repo_path = _normalize_repo_path(repo_path or _repo_path_context)
-        
+
         # Get node details including file path and line numbers using read-only query
         query = """
         MATCH (m:Module)-[:DEFINES|CONTAINS*..5]->(n)
@@ -329,31 +363,37 @@ def get_function_source_code(node_id: int, repo_path: str | None = None) -> str 
                n.end_line AS end_line, m.path AS path
         LIMIT 1
         """
-        
+
         results = execute_read_query(
             host=settings.MEMGRAPH_HOST,
             port=settings.MEMGRAPH_PORT,
             query=query,
-            params={"node_id": node_id, "repo_path": effective_repo_path or "."}
+            params={"node_id": node_id, "repo_path": effective_repo_path or "."},
         )
-        
+
         if not results:
             logger.warning(f"No node found with ID: {node_id}")
             return None
-            
+
         result = results[0]
         file_path = result.get("path")
         start_line = result.get("start_line")
         end_line = result.get("end_line")
-        
+
         # Validate and extract source code using shared utility
-        is_valid, file_path_obj = validate_source_location(file_path, start_line, end_line, repo_path=effective_repo_path)
+        is_valid, file_path_obj = validate_source_location(
+            file_path, start_line, end_line, repo_path=effective_repo_path
+        )
         if not is_valid:
-            logger.warning(f"Missing or invalid source location info for node {node_id}")
+            logger.warning(
+                f"Missing or invalid source location info for node {node_id}"
+            )
             return None
-            
-        return extract_source_lines(file_path_obj, start_line, end_line, repo_path=effective_repo_path)
-                
+
+        return extract_source_lines(
+            file_path_obj, start_line, end_line, repo_path=effective_repo_path
+        )
+
     except Exception as e:
         logger.error(f"Failed to get source code for node {node_id}: {e}")
         return None
@@ -366,34 +406,34 @@ def create_semantic_search_tool(repo_path: str | None = None) -> Tool:
     """
     global _repo_path_context
     _repo_path_context = _normalize_repo_path(repo_path)
-    
+
     async def semantic_search_functions(query: str, top_k: int = 5) -> str:
         """
         Search for functions/methods using natural language descriptions of their purpose.
-        
+
         Use this tool when you need to find code that performs specific functionality
         based on intent rather than exact names. Perfect for questions like:
         - "Find error handling functions"
         - "Show me authentication-related code"
         - "Where is data validation implemented?"
         - "Find functions that handle file I/O"
-        
+
         Args:
             query: Natural language description of the desired functionality
             top_k: Maximum number of results to return (default: 5)
-            
+
         Returns:
             String describing the found functions with their qualified names and similarity scores
         """
         logger.info(f"[Tool:SemanticSearch] Searching for: '{query}'")
-        
+
         # Use async version since we're in an async context (pydantic_ai tool)
         # _repo_path_context is set by the tool creator and will be used in the function
         outcome = await semantic_code_search_outcome_async(query, top_k)
-        
+
         if outcome.status != SemanticSearchStatus.OK:
             return outcome.message
-        
+
         results = outcome.matches
         if not results:
             return (
@@ -402,20 +442,20 @@ def create_semantic_search_tool(repo_path: str | None = None) -> Tool:
                 "have been generated yet. Run `graph-code start --repo-path <repo> "
                 "--update-graph` to generate embeddings during ingestion."
             )
-        
+
         # Format results for LLM consumption
         formatted_results = []
         for i, result in enumerate(results, 1):
             formatted_results.append(
                 f"{i}. {result['qualified_name']} (type: {result['type']}, score: {result['score']})"
             )
-        
+
         response = f"Found {len(results)} semantic matches for '{query}':\n\n"
         response += "\n".join(formatted_results)
         response += f"\n\nUse the qualified names above with other tools to get more details or source code."
-        
+
         return response
-    
+
     return Tool(semantic_search_functions, name="semantic_search_functions")
 
 
@@ -426,27 +466,27 @@ def create_get_source_tool(repo_path: str | None = None) -> Tool:
     """
     global _repo_path_context
     _repo_path_context = _normalize_repo_path(repo_path)
-    
+
     async def get_source_by_id(node_id: int) -> str:
         """
         Retrieve the complete source code for a function, method, or class by its node ID.
-        
+
         Use this tool after semantic search to get the actual implementation
         of symbols you're interested in.
-        
+
         Args:
             node_id: The Memgraph node ID of the symbol
-            
+
         Returns:
             The complete source code of the symbol
         """
         logger.info(f"[Tool:GetSource] Retrieving source for node ID: {node_id}")
-        
+
         source_code = get_function_source_code(node_id)
-        
+
         if source_code is None:
             return f"Could not retrieve source code for node ID {node_id}. The node may not exist or source file may be unavailable."
-        
+
         return f"Source code for node ID {node_id}:\n\n```\n{source_code}\n```"
-    
+
     return Tool(get_source_by_id, name="get_source_by_id")

@@ -556,6 +556,53 @@ async def test_mcp_context_quick_semantic_retrieval(
 
 
 @pytest.mark.asyncio
+async def test_mcp_context_quick_semantic_retrieval_uses_qdrant_file_path(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    async def fake_semantic_code_search_async(
+        query: str, top_k: int = 5, repo_path: str | None = None
+    ) -> list[dict[str, object]]:
+        return [
+            {
+                "node_id": 17,
+                "qualified_name": "file:docs/embedding-guide.md",
+                "type": "File",
+                "score": 0.88,
+                "matched_chunk_qualified_name": "file:docs/embedding-guide.md_chunk_0",
+                "chunk_text": "# Embedding Guide\n\nMarkdown source content.",
+                "file_path": "docs/embedding-guide.md",
+            }
+        ]
+
+    # The location query cannot resolve a Markdown File node through a Module
+    # relationship; isolate that graph boundary to exercise the Qdrant fallback.
+    monkeypatch.setattr(
+        "codebase_rag.mcp.server.semantic_code_search_async",
+        fake_semantic_code_search_async,
+    )
+    monkeypatch.setattr(
+        "codebase_rag.services.graph_service.execute_read_query",
+        lambda **_: [],
+    )
+
+    result = await GraphCodeMCPContext(
+        str(tmp_path), batch_size=25
+    ).quick_semantic_retrieval("embedding guide")
+
+    assert result["matches"] == [
+        {
+            "qualified_name": "file:docs/embedding-guide.md",
+            "type": "File",
+            "score": 0.88,
+            "filename": "docs/embedding-guide.md",
+            "start_line": None,
+            "end_line": None,
+            "snippet": "# Embedding Guide\n\nMarkdown source content.",
+        }
+    ]
+
+
+@pytest.mark.asyncio
 async def test_mcp_context_start_updater_skips_fresh_index(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -721,4 +768,3 @@ def test_extract_retrieval_metadata_empty_messages() -> None:
         "used_semantic_search": False,
         "sources": [],
     }
-

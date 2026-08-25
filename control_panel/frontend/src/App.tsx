@@ -531,8 +531,8 @@ function SemanticPanel({
               <header className="match-head" onClick={() => toggleMatch(idx)}>
                 <span className="match-score">{m.score !== null ? m.score.toFixed(3) : '—'}</span>
                 <span className="match-name">
-                  <code>{m.qualified_name ?? 'unknown'}</code>
-                  <span className="meta-k"> · {m.type ?? 'Code'}</span>
+                  <code>{m.qualified_name ?? m.filename ?? 'unknown'}</code>
+                  <span className="meta-k"> · {m.type === 'File' ? 'Source file' : (m.type ?? 'Code')}</span>
                 </span>
                 <span className="match-loc">
                   {m.filename ? `${m.filename}${m.start_line ? `:${m.start_line}` : ''}` : '—'}

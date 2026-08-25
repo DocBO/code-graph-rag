@@ -221,7 +221,9 @@ if has_qdrant_client():
             for start in range(0, len(points), upsert_batch_size):
                 point_batch = points[start : start + upsert_batch_size]
                 batch_num = (start // upsert_batch_size) + 1
-                total_batches = (len(points) + upsert_batch_size - 1) // upsert_batch_size
+                total_batches = (
+                    len(points) + upsert_batch_size - 1
+                ) // upsert_batch_size
                 _retry_qdrant_write(
                     lambda batch=point_batch: client.upsert(
                         collection_name=collection_name,
@@ -297,6 +299,7 @@ if has_qdrant_client():
                         "score": hit.score,
                         "matched_qualified_name": payload.get("qualified_name"),
                         "chunk_text": payload.get("chunk_text"),
+                        "file_path": payload.get("file_path"),
                     }
                 )
             return matches
@@ -443,9 +446,13 @@ elif _use_remote_qdrant():
             for start in range(0, len(points), upsert_batch_size):
                 point_batch = points[start : start + upsert_batch_size]
                 batch_num = (start // upsert_batch_size) + 1
-                total_batches = (len(points) + upsert_batch_size - 1) // upsert_batch_size
+                total_batches = (
+                    len(points) + upsert_batch_size - 1
+                ) // upsert_batch_size
 
-                def _put_points(batch_points: list[dict[str, Any]] = point_batch) -> None:
+                def _put_points(
+                    batch_points: list[dict[str, Any]] = point_batch,
+                ) -> None:
                     resp = httpx.put(
                         url,
                         json={"points": batch_points},
@@ -544,6 +551,7 @@ elif _use_remote_qdrant():
                         "score": hit.get("score"),
                         "matched_qualified_name": payload_data.get("qualified_name"),
                         "chunk_text": payload_data.get("chunk_text"),
+                        "file_path": payload_data.get("file_path"),
                     }
                 )
             return matches

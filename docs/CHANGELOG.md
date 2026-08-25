@@ -1,5 +1,49 @@
 # Changelog
 
+## [Unreleased]
+
+### 🧾 Label Markdown matches by source path (2026-08-25)
+
+**Status**: COMPLETED
+**Scope**: Control-panel semantic-result header
+**Verification**: Live `/api/semantic` query for `datenManagement_ldm`; control-panel production build
+
+#### Changes
+
+- Markdown `File` matches now use their returned source path as the primary header label instead of `unknown · File`.
+
+#### Migration / Operational Notes
+
+- None.
+
+### 📍 Show semantic-result source files (2026-08-25)
+
+**Status**: COMPLETED
+**Scope**: Qdrant semantic-result metadata, MCP retrieval, control panel
+**Verification**: 12 focused MCP/semantic-search tests passed; control-panel production build; Ruff check and formatting; `git diff --check`
+
+#### Changes
+
+- Semantic result cards now use the Qdrant-stored source path when graph location lookup cannot resolve a Markdown `File` node.
+
+#### Migration / Operational Notes
+
+- Existing Markdown vectors already contain their paths; no re-embedding is required.
+
+### 🧭 Focus Qdrant embeddings on Python APIs and Markdown (2026-08-25)
+
+**Status**: COMPLETED
+**Scope**: Qdrant embedding generation and incremental updates
+**Verification**: `uv run pytest tests/test_frontend_semantic_search.py codebase_rag/tests/test_semantic_search.py -v` (12 passed); Ruff check and formatting; `git diff --check`
+
+#### Changes
+
+- Qdrant now embeds Python class/function/method names with available docstrings and bounded Markdown chunks; Python bodies and non-Python assets are excluded. Memgraph ingestion is unchanged.
+
+#### Migration / Operational Notes
+
+- Regenerate embeddings with the existing `realtime_updater.py --only-embedding` action (or a full update) to replace vectors created by the previous strategy.
+
 ## 2026-08-21
 
 ### Control panel: MCP activity indicator (working vs stalled) ✅
@@ -582,4 +626,3 @@
 - Created `utils/test_vector_store_smoke.py` - Tests Qdrant connectivity
 - Created `utils/test_semantic_search_smoke.py` - Tests full semantic search pipeline
 - Created `utils/test_batch_embedding.py` - Verifies batch embeddings are 3.7x faster
-

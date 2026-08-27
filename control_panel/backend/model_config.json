@@ -4,7 +4,9 @@
     "google",
     "deepseek",
     "meta",
-    "kwaipilot"
+    "kwaipilot",
+    "qwen",
+    "z-ai"
   ],
   "models": {
     "openai": [
@@ -24,6 +26,13 @@
     ],
     "meta": [
       "meta/muse-spark-1.2-contributor"
+    ],
+    "qwen": [
+      "qwen/qwen3.8-flash"
+    ],
+    "z-ai": [
+      "z-ai/glm-5.3-flash"
     ]
+
   }
 }

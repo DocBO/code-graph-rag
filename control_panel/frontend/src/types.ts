@@ -38,6 +38,12 @@ export interface MemgraphHealth {
   error: string | null
 }
 
+export interface QdrantHealth {
+  at: number
+  alive: boolean
+  error: string | null
+}
+
 export interface ActiveModel {
   provider: string
   model: string
@@ -55,6 +61,7 @@ export interface ModelOptions {
 export interface ControlConfig {
   project_root: string
   memgraph: { host: string; port: number }
+  qdrant?: { host: string; port: number }
   mcp: { host: string; port: number; path: string }
   models: { orchestrator: ActiveModel; cypher: ActiveModel }
   default_debounce: number
@@ -65,6 +72,7 @@ export interface StatusResponse {
   repos: RepoInfo[]
   mcp: McpStatus
   memgraph: MemgraphHealth
+  qdrant?: QdrantHealth
   config: ControlConfig
 }
 

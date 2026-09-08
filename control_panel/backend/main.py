@@ -36,6 +36,15 @@ DATA_DIR = Path(__file__).resolve().parent / "data"
 REPOS_FILE = DATA_DIR / "repos.json"
 MODEL_CONFIG_PATH = Path(__file__).resolve().parent / "model_config.json"
 
+# Load the project root .env so MEMGRAPH_*/QDRANT_* overrides apply when the
+# backend is launched from control_panel/backend (cwd differs from root).
+try:
+    from dotenv import load_dotenv as _load_dotenv
+
+    _load_dotenv(PROJECT_ROOT / ".env", override=False)
+except Exception:
+    pass
+
 # Make the Graph-Code package importable from this backend (it lives in the
 # project root, not in control_panel/backend where uvicorn runs).
 if str(PROJECT_ROOT) not in sys.path:
@@ -43,6 +52,8 @@ if str(PROJECT_ROOT) not in sys.path:
 
 MEMGRAPH_HOST = os.environ.get("MEMGRAPH_HOST", "localhost")
 MEMGRAPH_PORT = int(os.environ.get("MEMGRAPH_PORT", "7687"))
+QDRANT_HOST = os.environ.get("QDRANT_HOST", "localhost")
+QDRANT_PORT = int(os.environ.get("QDRANT_PORT", "6333"))
 MCP_HOST = os.environ.get("MCP_HOST", "127.0.0.1")
 MCP_PORT = int(os.environ.get("MCP_PORT", "8765"))
 MCP_PATH = os.environ.get("MCP_PATH", "/mcp")
@@ -354,6 +365,8 @@ def _spawn(
     full_env = os.environ.copy()
     full_env["MEMGRAPH_HOST"] = MEMGRAPH_HOST
     full_env["MEMGRAPH_PORT"] = str(MEMGRAPH_PORT)
+    full_env["QDRANT_HOST"] = QDRANT_HOST
+    full_env["QDRANT_PORT"] = str(QDRANT_PORT)
     if env:
         full_env.update(env)
     return subprocess.Popen(
@@ -582,12 +595,15 @@ def _start_adopted_monitor(
 
 
 # --------------------------------------------------------------------------
-# Memgraph liveness probe
+# Memgraph / Qdrant liveness probes
 # --------------------------------------------------------------------------
 
 
 _MEMGRAPH_PROBE_LOCK = threading.Lock()
 _MEMGRAPH_PROBE_CACHE: dict[str, Any] = {"at": 0.0, "alive": False, "error": None}
+
+_QDRANT_PROBE_LOCK = threading.Lock()
+_QDRANT_PROBE_CACHE: dict[str, Any] = {"at": 0.0, "alive": False, "error": None}
 
 
 def _probe_memgraph_liveness(
@@ -619,6 +635,37 @@ def _probe_memgraph_liveness(
             {"at": time.time(), "alive": alive, "error": error}
         )
         return dict(_MEMGRAPH_PROBE_CACHE)
+
+
+def _probe_qdrant_liveness(
+    host: str | None = None,
+    port: int | None = None,
+    timeout: float = 2.0,
+) -> dict[str, Any]:
+    """Return a lightweight liveness probe result for the Qdrant HTTP API.
+
+    Uses a short GET on ``/healthz`` so the dashboard can show whether Qdrant
+    is actually reachable without pulling in the qdrant client or blocking the
+    status endpoint. Results are cached for a short interval to keep the
+    probe cheap while the UI polls every few seconds.
+    """
+    host = host or QDRANT_HOST
+    port = port or QDRANT_PORT
+    now = time.time()
+    with _QDRANT_PROBE_LOCK:
+        if now - _QDRANT_PROBE_CACHE["at"] < 2.0:
+            return dict(_QDRANT_PROBE_CACHE)
+        try:
+            with urllib.request.urlopen(
+                f"http://{host}:{port}/healthz", timeout=timeout
+            ) as resp:
+                alive = 200 <= resp.status < 300
+                error = None if alive else f"HTTP {resp.status}"
+        except Exception as exc:  # noqa: BLE001 - surface any connection failure
+            alive = False
+            error = str(exc)
+        _QDRANT_PROBE_CACHE.update({"at": time.time(), "alive": alive, "error": error})
+        return dict(_QDRANT_PROBE_CACHE)
 
 
 # --------------------------------------------------------------------------
@@ -1157,6 +1204,7 @@ def update_models(req: UpdateModelsRequest) -> dict[str, Any]:
 @app.get("/api/status")
 def status() -> dict[str, Any]:
     memgraph = _probe_memgraph_liveness()
+    qdrant = _probe_qdrant_liveness()
     from codebase_rag.config import settings
 
     orchestrator = settings.active_orchestrator_config
@@ -1165,9 +1213,11 @@ def status() -> dict[str, Any]:
         "repos": manager.list_repos(),
         "mcp": manager.mcp.status(),
         "memgraph": memgraph,
+        "qdrant": qdrant,
         "config": {
             "project_root": str(PROJECT_ROOT),
             "memgraph": {"host": MEMGRAPH_HOST, "port": MEMGRAPH_PORT},
+            "qdrant": {"host": QDRANT_HOST, "port": QDRANT_PORT},
             "mcp": {"host": MCP_HOST, "port": MCP_PORT, "path": MCP_PATH},
             "models": {
                 "orchestrator": {

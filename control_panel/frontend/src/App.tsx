@@ -1116,6 +1116,20 @@ export default function App() {
                       : 'DOWN'}
                 </span>
               </span>
+              <span
+                className={`sys chip chip-mg${!status?.qdrant?.alive ? ' chip-mg-err' : ''}`}
+              >
+                <StatusLamp tone={status?.qdrant?.alive ? 'ok' : 'err'} pulse={!status?.qdrant} />
+                <span className="meta-k">QDRANT</span>
+                {cfg?.qdrant ? `${cfg.qdrant.host}:${cfg.qdrant.port}` : '…'}
+                <span className="chip-state">
+                  {!status?.qdrant
+                    ? '…'
+                    : status.qdrant.alive
+                      ? 'ALIVE'
+                      : 'DOWN'}
+                </span>
+              </span>
               <span className={`conn${error ? ' conn-err' : ''}`}>
                 <StatusLamp tone={error ? 'err' : 'ok'} pulse={!status} />
                 {error ? 'API ERROR' : status ? 'LINKED' : 'CONNECTING…'}

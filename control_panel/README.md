@@ -90,6 +90,11 @@ the agent's markdown answer is rendered in place with a **Copy** button.
 - `active_requests`: count of in-flight MCP request methods (`POST`/`PUT`/`PATCH`/`DELETE`)
 - `last_activity_at`: epoch timestamp of the latest non-keepalive MCP log event
 
+`GET /api/status` also returns `memgraph` and `qdrant` liveness objects
+(`{at, alive, error}`, each cached ~2s): Memgraph is probed via TCP connect
+to the Bolt port, Qdrant via `GET /healthz` on its HTTP API. The dashboard
+topbar shows a MEMGRAPH chip and a QDRANT chip below it (`ALIVE`/`DOWN`).
+
 `POST /api/repos/{path}/embedding` spawns `realtime_updater.py --only-embedding`
 as a tracked subprocess: it cleans the Qdrant collection and regenerates all
 semantic embeddings from the current graph, without ingesting files or touching
@@ -110,6 +115,8 @@ sees the result.
 | `CONTROL_PORT`   | `8008`             | Backend API port              |
 | `MEMGRAPH_HOST`  | `localhost`        | Memgraph host                 |
 | `MEMGRAPH_PORT`  | `7687`             | Memgraph port                 |
+| `QDRANT_HOST`    | `localhost`        | Qdrant host                   |
+| `QDRANT_PORT`    | `6333`             | Qdrant HTTP API port          |
 | `MCP_HOST`       | `127.0.0.1`        | MCP server bind host          |
 | `MCP_PORT`       | `8765`             | MCP server port               |
 | `MCP_PATH`       | `/mcp`             | MCP HTTP path                 |

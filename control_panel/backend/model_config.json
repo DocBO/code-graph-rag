@@ -6,7 +6,8 @@
     "meta",
     "kwaipilot",
     "qwen",
-    "z-ai"
+    "z-ai",
+    "inception"
   ],
   "models": {
     "openai": [
@@ -25,13 +26,16 @@
       "kwaipilot/kat-coder-pro-v2"
     ],
     "meta": [
-      "meta/muse-spark-1.2-contributor"
+      "meta/muse-spark-1.3-contributor"
     ],
     "qwen": [
       "qwen/qwen3.8-flash"
     ],
     "z-ai": [
       "z-ai/glm-5.3-flash"
+    ],
+    "inception": [
+      "inception/mercury-2.5-preview"
     ]
 
   }

@@ -117,7 +117,7 @@ def _fetch_node_location(node_id: int, repo_path: str) -> dict[str, Any] | None:
     query = """
     MATCH (n)
     WHERE id(n) = $node_id AND n._repo_path = $repo_path
-    OPTIONAL MATCH (m:Module)-[:DEFINES|CONTAINS*..5]->(n)
+    OPTIONAL MATCH (m:Module)-[:DEFINES|CONTAINS|DEFINES_METHOD*..6]->(n)
     RETURN labels(n) AS labels,
            n.qualified_name AS qualified_name,
            n.name AS name,

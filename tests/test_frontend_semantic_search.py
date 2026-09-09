@@ -183,7 +183,9 @@ def test_full_embedding_pass_stores_python_and_markdown_chunks_only(
     query = updater.ingestor._execute_query.call_args.args[0]
     params = updater.ingestor._execute_query.call_args.args[1]
     assert "n:Function" in query
+    assert "n:Method" in query
     assert "n:File" in query
+    assert "DEFINES_METHOD" in query
     assert "path ENDS WITH '.py'" in query
     assert params["markdown_extension"] == ".md"
     assert len(stored) == 1
@@ -250,6 +252,9 @@ def test_incremental_embedding_replaces_only_python_and_markdown_documents(
 
     updater.update_embeddings_for_files([python_file, markdown_file, typescript_file])
 
+    symbol_query = updater.ingestor._execute_query.call_args_list[0].args[0]
+    assert "n:Method" in symbol_query
+    assert "DEFINES_METHOD" in symbol_query
     assert deleted == ["jobs.py", "jobs.md", "jobs.ts"]
     assert {row[0] for row in stored} == {20, 21}
     assert "Run a scheduled job" in stored[0][3]

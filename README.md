@@ -77,7 +77,6 @@ specific one; otherwise the selected default repository is used.
 - `get_watched_repos`: registered repositories and watcher states.
 - `get_status`: MCP configuration and service status.
 - `ingest_status`: index freshness and pending changes.
-- `start_updater`: one-shot graph update when an index is stale.
 - `quick_semantic_retrieval`: fast semantic code matches with source locations.
 - `query_codebase` and `query_codegraph`: evidence-backed codebase answers.
 

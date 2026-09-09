@@ -366,7 +366,7 @@ def get_function_source_code(node_id: int, repo_path: str | None = None) -> str 
 
         # Get node details including file path and line numbers using read-only query
         query = """
-        MATCH (m:Module)-[:DEFINES|CONTAINS*..5]->(n)
+        MATCH (m:Module)-[:DEFINES|CONTAINS|DEFINES_METHOD*..6]->(n)
         WHERE id(n) = $node_id AND n._repo_path = $repo_path
         RETURN n.qualified_name AS qualified_name, n.start_line AS start_line, 
                n.end_line AS end_line, m.path AS path

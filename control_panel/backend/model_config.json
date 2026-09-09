@@ -35,7 +35,7 @@
       "z-ai/glm-5.3-flash"
     ],
     "inception": [
-      "inception/mercury-2.5-preview"
+      "inception/mercury-2.5"
     ]
 
   }

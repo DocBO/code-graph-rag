@@ -74,7 +74,7 @@ QDRANT_API_KEY=
 
 ### Rate limiting & retry (added 2026-08-12)
 
-- `EMBED_RATE_LIMIT_RPM` — max external embedder requests per minute (default `60`). A shared token-bucket limiter spaces requests so full re-embeds (watcher Pass 4, MCP `start_updater`, CLI `--only-embedding`) never flood the endpoint.
+- `EMBED_RATE_LIMIT_RPM` — max external embedder requests per minute (default `60`). A shared token-bucket limiter spaces requests so full re-embeds (watcher Pass 4, CLI `--only-embedding`) never flood the endpoint.
 - `EMBED_MAX_RETRIES` — retries on transient `429`/`5xx` responses (default `3`). The server's `Retry-After` header is honored when present, otherwise exponential backoff is used.
 - `EMBED_RETRY_BACKOFF` — base backoff seconds (default `2.0`), doubled per retry.
 - If a batch embed still fails after retries, Pass 4 falls back to per-item embedding so only genuinely failing items are skipped instead of the whole chunk.

@@ -2,6 +2,40 @@
 
 ## [Unreleased]
 
+### 🐍 Embed Python methods in Qdrant (2026-09-09)
+
+**Status**: COMPLETED
+**Scope**: Embedding queries (`codebase_rag/graph_updater.py`), retrieval location lookups
+**Verification**: Live Memgraph check on `datenManagement_fdm` (eligible symbols 634 → 2435 incl. 1801 methods; `writeChartErrorPlaceholder` resolves to its `.py` path); 25 focused tests passed; Ruff check + format clean
+
+#### Changes
+
+- Pass 4 (`_generate_semantic_embeddings`) and incremental (`update_embeddings_for_files`) Cypher now traverse `DEFINES|CONTAINS|DEFINES_METHOD*..6`, so `Method` nodes (linked `Module -DEFINES-> Class -DEFINES_METHOD-> Method`) resolve to their `.py` path and get embedded (name + docstring, no implementation body — unchanged).
+- Same rel-type fix applied to source-location lookups in `codebase_rag/mcp/server.py`, `codebase_rag/tools/semantic_search.py`, and `codebase_rag/tools/semantic_seed_strategy.py` so method matches return their file path.
+- Extended `tests/test_frontend_semantic_search.py` assertions to cover `n:Method` / `DEFINES_METHOD` in both embedding queries.
+
+#### Migration / Operational Notes
+
+- Existing Qdrant collections predate method coverage: re-run embedding regeneration (control-panel **Only embeddings** / `realtime_updater.py --only-embedding`) to backfill method vectors. Pass 4 cleans the collection first, so the refill is self-consistent.
+- Expect higher point counts (e.g. ~656 → ~2400+ for `datenManagement_fdm`) and proportionally longer Pass 4 runs.
+
+### 🗑️ Remove `start_updater` MCP tool (2026-09-09)
+
+**Status**: COMPLETED
+**Scope**: MCP server (`codebase_rag/mcp/server.py`), MCP tests, docs
+**Verification**: `ruff check` + `ruff format --check` clean; `pytest codebase_rag/tests/test_mcp_server.py` 7 passed; tool-registry smoke check (8 tools, no `start_updater`)
+
+#### Changes
+
+- Removed `GraphCodeMCPContext.start_updater` (one-shot full graph update) from the MCP server, including its tool definition, dispatch branch, schema case, and now-unused imports/helpers (`GraphUpdater`, `write_ingest_metadata`, `load_parsers`, parser cache).
+- Removed `start_updater` coverage from `codebase_rag/tests/test_mcp_server.py` (stub, schema/dispatch assertions, fresh/stale context tests).
+- Updated docs: `docs/mcp-tools.md` section removed (workflow now points at `ingest_status` + `get_watched_repos`/watcher re-sync), `README.md` tool list entry removed, `docs/IMPROVEMENT_MCP.md` freshness guidance reworded, rate-limiter comments in `docs/SEMANTIC_SEARCH_CONFIG.md` and `codebase_rag/embedder.py` updated.
+
+#### Migration / Operational Notes
+
+- Agents can no longer trigger a one-shot full update via MCP; index re-syncs are handled by the real-time watcher. Use `ingest_status` to detect staleness and `get_watched_repos` to check watcher state.
+- Restart the MCP server to pick up the reduced tool list.
+
 ### 🏷️ Label Markdown semantic matches by source (2026-08-25)
 
 **Status**: COMPLETED

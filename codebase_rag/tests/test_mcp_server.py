@@ -93,21 +93,6 @@ class StubContext:
             "metadata_path": "/workspace/.graphcode_ingest.json",
         }
 
-    async def start_updater(
-        self,
-        repo_path: str | None = None,
-        force: bool = False,
-    ) -> dict[str, object]:
-        self.calls.append(("start_updater", {"repo_path": repo_path, "force": force}))
-        return {
-            "repo_path": repo_path or "/workspace",
-            "started": True,
-            "reason": "stale" if force else "index_fresh",
-            "last_ingest": "2025-11-15T12:00:00Z",
-            "changes": {"added": 1, "deleted": 0, "modified": 0, "total": 1},
-            "metadata_path": "/workspace/.graphcode_ingest.json",
-        }
-
     async def query_codebase(
         self,
         question: str,
@@ -209,7 +194,7 @@ def test_mcp_server_lists_tools_and_invokes_them() -> None:
                     "query_codebase",
                     "query_codegraph",
                     "quick_semantic_retrieval",
-                    "start_updater",
+                    "get_watched_repos",
                 }.issubset(tool_names)
 
                 query_codebase_tool = next(
@@ -242,22 +227,6 @@ def test_mcp_server_lists_tools_and_invokes_them() -> None:
                     "repo_path",
                 }
 
-                start_updater_tool = next(
-                    tool for tool in tools_result.tools if tool.name == "start_updater"
-                )
-                assert set(start_updater_tool.inputSchema["properties"]) == {
-                    "repo_path",
-                    "force",
-                }
-                assert set(start_updater_tool.outputSchema["properties"]) == {
-                    "repo_path",
-                    "started",
-                    "reason",
-                    "last_ingest",
-                    "changes",
-                    "metadata_path",
-                }
-
                 query_result = await session.call_tool(
                     "graph_query", {"question": "List modules"}
                 )
@@ -273,13 +242,6 @@ def test_mcp_server_lists_tools_and_invokes_them() -> None:
                     ingest_status_result.structuredContent["last_ingest"]
                     == "2025-11-15T12:00:00Z"
                 )
-
-                start_updater_result = await session.call_tool(
-                    "start_updater", {"force": True}
-                )
-                assert not start_updater_result.isError
-                assert start_updater_result.structuredContent["started"] is True
-                assert start_updater_result.structuredContent["reason"] == "stale"
 
                 codebase_result = await session.call_tool(
                     "query_codebase",
@@ -397,7 +359,6 @@ def test_mcp_server_lists_tools_and_invokes_them() -> None:
             "repo_path": "/workspace/alt",
         },
     ) in context.calls
-    assert ("start_updater", {"repo_path": None, "force": True}) in context.calls
 
 
 @pytest.mark.asyncio
@@ -600,93 +561,6 @@ async def test_mcp_context_quick_semantic_retrieval_uses_qdrant_file_path(
             "snippet": "# Embedding Guide\n\nMarkdown source content.",
         }
     ]
-
-
-@pytest.mark.asyncio
-async def test_mcp_context_start_updater_skips_fresh_index(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    captured: dict[str, object] = {}
-
-    def fake_summarize_ingest_status(
-        repo_path: Path,
-    ) -> tuple[str | None, dict[str, int], Path]:
-        captured["summary_repo"] = repo_path
-        return (
-            "2025-11-15T12:00:00Z",
-            {"added": 0, "deleted": 0, "modified": 0, "total": 0},
-            repo_path / ".graphcode_ingest.json",
-        )
-
-    monkeypatch.setattr(
-        "codebase_rag.mcp.server.summarize_ingest_status",
-        fake_summarize_ingest_status,
-    )
-
-    context = GraphCodeMCPContext(str(tmp_path), batch_size=25)
-    result = await context.start_updater()
-
-    assert result["started"] is False
-    assert result["reason"] == "index_fresh"
-
-
-@pytest.mark.asyncio
-async def test_mcp_context_start_updater_runs_when_stale(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    captured: dict[str, object] = {}
-
-    def fake_summarize_ingest_status(
-        repo_path: Path,
-    ) -> tuple[str | None, dict[str, int], Path]:
-        captured["summary_repo"] = repo_path
-        return (
-            "2025-11-15T12:00:00Z",
-            {"added": 2, "deleted": 0, "modified": 1, "total": 3},
-            repo_path / ".graphcode_ingest.json",
-        )
-
-    class DummyIngestor:
-        def __init__(self, **kwargs: object) -> None:
-            captured["ingestor_kwargs"] = kwargs
-
-        def __enter__(self) -> DummyIngestor:
-            return self
-
-        def __exit__(self, *args: object) -> None:
-            return None
-
-        def ensure_constraints(self) -> None:
-            captured["ensure_constraints"] = True
-
-    class DummyUpdater:
-        def __init__(self, *args: object, **kwargs: object) -> None:
-            captured["updater_args"] = (args, kwargs)
-
-        def run(self) -> None:
-            captured["updater_run"] = True
-
-    def fake_write_metadata(repo_path: Path) -> object:
-        captured["metadata_repo"] = repo_path
-        return object()
-
-    monkeypatch.setattr(
-        "codebase_rag.mcp.server.summarize_ingest_status",
-        fake_summarize_ingest_status,
-    )
-    monkeypatch.setattr("codebase_rag.mcp.server.MemgraphIngestor", DummyIngestor)
-    monkeypatch.setattr("codebase_rag.mcp.server.GraphUpdater", DummyUpdater)
-    monkeypatch.setattr(
-        "codebase_rag.mcp.server.write_ingest_metadata", fake_write_metadata
-    )
-
-    context = GraphCodeMCPContext(str(tmp_path), batch_size=25)
-    result = await context.start_updater()
-
-    assert result["started"] is True
-    assert result["reason"] == "stale"
-    assert captured["updater_run"] is True
-    assert captured["metadata_repo"] == tmp_path.resolve()
 
 
 def test_extract_retrieval_metadata_collects_usage_and_sources() -> None:

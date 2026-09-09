@@ -21,7 +21,7 @@ class EmbedRateLimiter:
     """Thread-safe token-bucket rate limiter shared across sync/async callers.
 
     A module-level instance is used by every embedder request, so parallel
-    ingestion paths (watcher Pass 4, MCP start_updater, CLI --only-embedding)
+    ingestion paths (watcher Pass 4, CLI --only-embedding)
     all share the same budget and never flood the external endpoint.
     """
 

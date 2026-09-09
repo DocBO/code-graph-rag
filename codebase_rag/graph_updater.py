@@ -382,9 +382,11 @@ class GraphUpdater:
 
             # Query only Python symbols. Memgraph continues to contain symbols
             # from every supported language; this restriction is Qdrant-only.
+            # Methods hang off their Class via DEFINES_METHOD, not directly off
+            # the Module, so include that rel type in the path.
             placeholders = ", ".join(f"${i}" for i in range(len(rel_paths)))
             symbol_query = f"""
-            MATCH (m:Module)-[:DEFINES|CONTAINS*..5]->(n)
+            MATCH (m:Module)-[:DEFINES|CONTAINS|DEFINES_METHOD*..6]->(n)
             WHERE (n:Function OR n:Method OR n:Class)
               AND m.path IN [{placeholders}]
               AND m.path ENDS WITH '.py'
@@ -621,10 +623,12 @@ class GraphUpdater:
 
             # Memgraph remains language-agnostic. Qdrant intentionally stores a
             # concise semantic corpus: Python names/docstrings and Markdown.
+            # Methods hang off their Class via DEFINES_METHOD (Module defines
+            # the Class, not the Method directly), so include that rel type.
             query = """
             MATCH (n)
             WHERE n._repo_path = $repo_path
-            OPTIONAL MATCH (m:Module)-[:DEFINES|CONTAINS*..5]->(n)
+            OPTIONAL MATCH (m:Module)-[:DEFINES|CONTAINS|DEFINES_METHOD*..6]->(n)
             WITH n, m, coalesce(m.path, n.path) AS path
             WHERE (
                 (n:Function OR n:Method OR n:Class) AND path ENDS WITH '.py'

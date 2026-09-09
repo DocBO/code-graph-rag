@@ -93,20 +93,7 @@ Compatibility: `query_codegraph` is supported as an alias with the same request/
 }
 ```
 
-### 6. `start_updater`
-**Title:** Start Updater  
-**Description:** Run a one-shot full graph update for a repo. Detects whether the index is stale from ingest metadata and skips the update when it is fresh unless `force` is true. Use this after `ingest_status` reports pending file changes so the knowledge graph reflects the current code.
-
-**Parameters:**
-- `repo_path` (string, optional): Repository path override. Defaults to the server's configured repository.
-- `force` (boolean, optional): Run a full graph update even when the index is not stale (default: `false`).
-
-**Returns:**
-- `repo_path`, `started` (boolean), `reason` (`"stale"` / `"forced"` / `"index_fresh"`), `last_ingest`, `changes` (added/deleted/modified/total), `metadata_path`
-
-When `started` is `false`, `reason` is `"index_fresh"` and no update is performed. When `started` is `true`, a full `GraphUpdater.run()` scan is executed and ingest metadata is refreshed on success.
-
-**Example workflow:** call `ingest_status`; if `changes.total > 0` (stale index), call `start_updater` to re-sync the graph before querying.
+**Example workflow:** call `ingest_status`; if `changes.total > 0` (stale index), ensure the real-time watcher is running (`get_watched_repos`) so the graph re-syncs before querying.
 
 ## Startup
 

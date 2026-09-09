@@ -240,7 +240,7 @@ The update path is intended to keep the stores synchronized:
 5. Store replacement vectors in the repository-specific Qdrant collection.
 6. Write ingest metadata.
 
-The MCP `start_updater` tool checks ingest metadata first and avoids a full update when the index is fresh. It can also force a rebuild and clean the Qdrant collection before regeneration.
+Index re-syncs are handled by the real-time watcher, which checks ingest metadata and runs a full update when the index is stale.
 
 ---
 
@@ -398,14 +398,14 @@ This is important because `semantic_code_search` catches exceptions and returns 
 The MCP server already exposes:
 
 - `ingest_status`
-- `start_updater`
+- `get_watched_repos`
 
 The orchestrator guidance should use them:
 
 ```text
 Before answering repository-wide implementation questions, check whether the
-index has pending changes. If changes are present, use start_updater unless the
-user explicitly requests analysis of the indexed snapshot.
+index has pending changes. If changes are present, check the watcher state via
+get_watched_repos unless the user explicitly requests analysis of the indexed snapshot.
 ```
 
 This is especially relevant when the real-time watcher is not running.

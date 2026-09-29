@@ -10,7 +10,7 @@ from typing import Any
 import httpx
 from loguru import logger
 
-from .config import settings
+from .config import openrouter_attribution_headers, settings
 
 
 class EmbeddingError(Exception):
@@ -88,7 +88,11 @@ async def _embed_external_batch(
     Requests are throttled by a shared token bucket and retried with backoff on
     429/5xx responses, honoring the Retry-After header when the server sends it.
     """
+    # Embedding calls are billed and counted by OpenRouter too, so they carry
+    # the same app attribution as the chat models when EMBED_ENDPOINT is
+    # OpenRouter's API.
     headers = {"Content-Type": "application/json"}
+    headers.update(openrouter_attribution_headers(settings.EMBED_ENDPOINT))
     if settings.EMBED_API_KEY:
         headers["Authorization"] = f"Bearer {settings.EMBED_API_KEY}"
 

@@ -6,6 +6,7 @@ from urllib.parse import urljoin
 
 import httpx
 from loguru import logger
+from openai import AsyncOpenAI
 from pydantic_ai.models.gemini import GeminiModel, GeminiModelSettings
 from pydantic_ai.models.openai import (
     OpenAIModel,
@@ -15,6 +16,8 @@ from pydantic_ai.models.openai import (
 from pydantic_ai.providers.google_gla import GoogleGLAProvider
 from pydantic_ai.providers.google_vertex import GoogleVertexProvider, VertexAiRegion
 from pydantic_ai.providers.openai import OpenAIProvider as PydanticOpenAIProvider
+
+from ..config import openrouter_attribution_headers
 
 
 class ModelProvider(ABC):
@@ -167,10 +170,23 @@ class OpenRouterProvider(ModelProvider):
     def create_model(self, model_id: str, **kwargs: Any) -> OpenAIResponsesModel:
         self.validate_config()
 
-        provider = PydanticOpenAIProvider(
-            api_key=self.api_key,
-            base_url=self.endpoint,
-        )
+        # Attribution travels as default headers on the OpenAI client: the
+        # pydantic-ai provider exposes no header argument, and without them
+        # OpenRouter cannot associate this app's usage with APP_ID.
+        attribution = openrouter_attribution_headers(self.endpoint)
+        if attribution:
+            provider = PydanticOpenAIProvider(
+                openai_client=AsyncOpenAI(
+                    api_key=self.api_key,
+                    base_url=self.endpoint,
+                    default_headers=attribution,
+                )
+            )
+        else:
+            provider = PydanticOpenAIProvider(
+                api_key=self.api_key,
+                base_url=self.endpoint,
+            )
         if self.reasoning_effort is None:
             return OpenAIResponsesModel(model_id, provider=provider, **kwargs)
         model_settings = OpenAIResponsesModelSettings(

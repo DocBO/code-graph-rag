@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from codebase_rag.config import DEFAULT_APP_URL
 from codebase_rag.embedder import (
     EmbeddingError,
     EmbedRateLimiter,
@@ -160,3 +161,40 @@ class TestEmbedExternalBatchRetry:
         with pytest.raises(EmbeddingError, match="rate limit exceeded"):
             asyncio.run(_embed_external_batch(["def f(): pass"]))
         assert client.post.await_count == 3
+
+
+class TestExternalEmbedderAttribution:
+    """OpenRouter embeddings carry the same APP_ID attribution as chat calls."""
+
+    def test_app_attribution_headers_are_posted(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        client = AsyncMock()
+        client.post = AsyncMock(
+            return_value=MagicMock(
+                status_code=200,
+                headers={},
+                json=lambda: {"data": [{"embedding": [0.1]}]},
+            )
+        )
+        client.__aenter__ = AsyncMock(return_value=client)
+        client.__aexit__ = AsyncMock(return_value=None)
+
+        monkeypatch.setattr("codebase_rag.embedder.httpx.AsyncClient", lambda **kw: client)
+        monkeypatch.setattr(
+            "codebase_rag.embedder._get_rate_limiter", lambda: NoopRateLimiter()
+        )
+        monkeypatch.setattr(
+            "codebase_rag.embedder.settings.EMBED_ENDPOINT",
+            "https://openrouter.ai/api/v1",
+        )
+        monkeypatch.setattr("codebase_rag.embedder.settings.APP_ID", "code-graph-rag")
+        monkeypatch.setattr("codebase_rag.embedder.settings.APP_URL", None)
+        monkeypatch.setattr("codebase_rag.embedder.settings.EMBED_API_KEY", "or-key")
+
+        asyncio.run(_embed_external_batch(["def f(): pass"]))
+
+        headers = client.post.await_args.kwargs["headers"]
+        assert headers["X-OpenRouter-Title"] == "code-graph-rag"
+        assert headers["HTTP-Referer"] == DEFAULT_APP_URL
+        assert headers["Authorization"] == "Bearer or-key"

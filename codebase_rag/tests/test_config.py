@@ -7,9 +7,14 @@ import pytest
 
 from codebase_rag.config import (
     BASE_IGNORE_PATTERNS,
+    DEFAULT_APP_URL,
     AppConfig,
     ModelConfig,
     _parse_ignore_dirs,
+    openrouter_attribution_headers,
+)
+from codebase_rag.config import (
+    settings as config_settings,
 )
 
 
@@ -170,3 +175,52 @@ class TestDefaultFallback:
 
             assert config.active_orchestrator_config.reasoning_effort == "low"
             assert config.active_cypher_config.reasoning_effort == "medium"
+
+
+class TestOpenRouterAttributionHeaders:
+    """Attribution is opt-in via APP_ID and never sent to unrelated endpoints."""
+
+    def test_nothing_sent_without_app_id(self) -> None:
+        with (
+            patch.object(config_settings, "APP_ID", None),
+            patch.object(config_settings, "APP_URL", None),
+        ):
+            assert openrouter_attribution_headers("https://openrouter.ai/api/v1") == {}
+
+    def test_app_id_uses_project_referer_for_openrouter(self) -> None:
+        with (
+            patch.object(config_settings, "APP_ID", "code-graph-rag"),
+            patch.object(config_settings, "APP_URL", None),
+        ):
+            headers = openrouter_attribution_headers("https://openrouter.ai/api/v1")
+
+        assert headers == {
+            "HTTP-Referer": DEFAULT_APP_URL,
+            "X-OpenRouter-Title": "code-graph-rag",
+        }
+
+    def test_app_url_overrides_referer(self) -> None:
+        with (
+            patch.object(config_settings, "APP_ID", "my-fork"),
+            patch.object(config_settings, "APP_URL", "https://example.com/app"),
+        ):
+            headers = openrouter_attribution_headers("https://openrouter.ai/api/v1")
+
+        assert headers["HTTP-Referer"] == "https://example.com/app"
+        assert headers["X-OpenRouter-Title"] == "my-fork"
+
+    def test_foreign_endpoint_without_app_url_is_left_alone(self) -> None:
+        with (
+            patch.object(config_settings, "APP_ID", "code-graph-rag"),
+            patch.object(config_settings, "APP_URL", None),
+        ):
+            assert openrouter_attribution_headers("https://api.openai.com/v1") == {}
+
+    def test_app_url_reaches_an_explicitly_attributed_endpoint(self) -> None:
+        with (
+            patch.object(config_settings, "APP_ID", "my-fork"),
+            patch.object(config_settings, "APP_URL", "https://example.com/app"),
+        ):
+            headers = openrouter_attribution_headers("https://proxy.example.com/v1")
+
+        assert headers["HTTP-Referer"] == "https://example.com/app"

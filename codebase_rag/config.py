@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any, Literal
+from urllib.parse import urlparse
 
 from dotenv import load_dotenv
 from prompt_toolkit.styles import Style
@@ -9,6 +10,15 @@ from pydantic import AnyHttpUrl
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 load_dotenv()
+
+
+# OpenRouter identifies an application by the URL in its `HTTP-Referer` request
+# header and names it with `X-OpenRouter-Title`. Attribution is opt-in here:
+# no header is sent until APP_ID names this deployment, and the referer then
+# falls back to the project URL, because OpenRouter ignores a title that no
+# referer introduced. https://openrouter.ai/docs/app-attribution
+DEFAULT_APP_URL = "https://github.com/vitali87/code-graph-rag"
+OPENROUTER_HOST = "openrouter.ai"
 
 
 @dataclass
@@ -74,6 +84,10 @@ class AppConfig(BaseSettings):
 
     # Fallback endpoint for ollama
     LOCAL_MODEL_ENDPOINT: AnyHttpUrl = AnyHttpUrl("http://localhost:11434/v1")
+
+    # OpenRouter app attribution; see openrouter_attribution_headers().
+    APP_ID: str | None = None
+    APP_URL: str | None = None
 
     # General settings
     TARGET_REPO_PATH: str = "."
@@ -199,6 +213,35 @@ class AppConfig(BaseSettings):
 
 
 settings = AppConfig()
+
+
+def openrouter_attribution_headers(endpoint: str | None = None) -> dict[str, str]:
+    """App-attribution headers for a request to `endpoint`, if any apply.
+
+    Empty unless APP_ID is configured, so requests stay unidentified by
+    default. OpenRouter attributes usage through the `HTTP-Referer` header
+    (the app's URL) and *names* that app with `X-OpenRouter-Title`; a title
+    without a referer creates nothing, which is why the project URL stands in
+    when the endpoint is OpenRouter's own API. APP_URL overrides that referer.
+
+    A non-OpenRouter endpoint gets nothing unless APP_URL is set: it is not
+    OpenRouter, and sending it this project's referer would misattribute the
+    traffic (or leak a header a third-party API does not expect).
+    """
+    if not settings.APP_ID:
+        return {}
+
+    if settings.APP_URL:
+        referer = settings.APP_URL
+    elif OPENROUTER_HOST in urlparse(endpoint or "").netloc:
+        referer = DEFAULT_APP_URL
+    else:
+        return {}
+
+    return {
+        "HTTP-Referer": referer.strip(),
+        "X-OpenRouter-Title": settings.APP_ID.strip(),
+    }
 
 
 def _parse_ignore_dirs(raw: str | None) -> set[str]:

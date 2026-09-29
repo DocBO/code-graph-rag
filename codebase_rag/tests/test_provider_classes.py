@@ -7,6 +7,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from codebase_rag.config import DEFAULT_APP_URL
+from codebase_rag.config import settings as config_settings
 from codebase_rag.providers.base import (
     GoogleProvider,
     ModelProvider,
@@ -335,10 +337,49 @@ class TestModelCreation:
         mock_model = MagicMock()
         mock_openai_model.return_value = mock_model
 
-        provider.create_model("anthropic/sonnet")
+        # Pinned: a developer's local .env may set APP_ID, and this case is
+        # specifically the unattributed client.
+        with (
+            patch.object(config_settings, "APP_ID", None),
+            patch.object(config_settings, "APP_URL", None),
+        ):
+            provider.create_model("anthropic/sonnet")
 
         mock_openai_provider.assert_called_once_with(
             api_key="sk-test-key", base_url="https://openrouter.ai/api/v1"
+        )
+        mock_openai_model.assert_called_once_with(
+            "anthropic/sonnet", provider=mock_openai_provider.return_value
+        )
+
+    @patch("codebase_rag.providers.base.AsyncOpenAI")
+    @patch("codebase_rag.providers.base.PydanticOpenAIProvider")
+    @patch("codebase_rag.providers.base.OpenAIResponsesModel")
+    def test_openrouter_model_creation_sends_app_attribution(
+        self,
+        mock_openai_model: Any,
+        mock_openai_provider: Any,
+        mock_async_openai: Any,
+    ) -> None:
+        """APP_ID reaches OpenRouter as attribution headers on the client."""
+        provider = OpenRouterProvider(api_key="sk-test-key")
+
+        with (
+            patch.object(config_settings, "APP_ID", "code-graph-rag"),
+            patch.object(config_settings, "APP_URL", None),
+        ):
+            provider.create_model("anthropic/sonnet")
+
+        mock_async_openai.assert_called_once_with(
+            api_key="sk-test-key",
+            base_url="https://openrouter.ai/api/v1",
+            default_headers={
+                "HTTP-Referer": DEFAULT_APP_URL,
+                "X-OpenRouter-Title": "code-graph-rag",
+            },
+        )
+        mock_openai_provider.assert_called_once_with(
+            openai_client=mock_async_openai.return_value
         )
         mock_openai_model.assert_called_once_with(
             "anthropic/sonnet", provider=mock_openai_provider.return_value

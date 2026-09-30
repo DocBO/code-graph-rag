@@ -14,11 +14,28 @@ from .language_config import LANGUAGE_FQN_CONFIGS, get_language_config
 from .parsers.factory import ProcessorFactory
 from .services.graph_service import MemgraphIngestor
 from .utils.chunking import chunk_boundaries
-from .utils.dependencies import has_semantic_dependencies
+from .utils.dependencies import has_semantic_dependencies, missing_semantic_dependencies
 from .utils.fqn_resolver import find_function_source_by_fqn
 from .utils.source_extraction import extract_source_with_fallback
 
 SEMANTIC_MARKDOWN_EXTENSION = ".md"
+
+
+def _format_semantic_dependency_skip(skip_context: str) -> str:
+    """Build a single-line report for a semantic pass that was skipped.
+
+    Names every unmet requirement, then the effective embedder settings and the
+    running interpreter. A bare "dependencies not available" line cannot tell a
+    missing ``semantic`` extra apart from an unread ``.env`` or a different
+    virtualenv; this one can, without a shell on the host.
+    """
+    reasons = missing_semantic_dependencies()
+    detail = "; ".join(reasons) if reasons else "no missing requirement detected"
+    return (
+        f"Semantic search dependencies not available, skipping {skip_context}: "
+        f"{detail} [EMBED_ENDPOINT={settings.EMBED_ENDPOINT or '<unset>'}, "
+        f"EMBED_MODEL={settings.EMBED_MODEL or '<unset>'}, python={sys.executable}]"
+    )
 
 
 class FunctionRegistryTrie:
@@ -279,6 +296,10 @@ class GraphUpdater:
         self.ast_cache = BoundedASTCache(max_entries=1000, max_memory_mb=500)
         self.ignore_dirs = IGNORE_PATTERNS
         self.ignore_suffixes = IGNORE_SUFFIXES
+        # Semantic passes are gated on external dependencies; report the cause
+        # once per updater so a watcher left without them does not log the same
+        # warning on every debounce batch.
+        self._semantic_dependency_skip_logged = False
 
         # Create processor factory with all dependencies
         self.factory = ProcessorFactory(
@@ -361,9 +382,17 @@ class GraphUpdater:
 
         logger.info("✓✓✓ Ingestion complete")
 
+    def _warn_semantic_dependencies_missing(self, skip_context: str) -> None:
+        """Log why a semantic pass is skipped, at most once per updater."""
+        if self._semantic_dependency_skip_logged:
+            return
+        self._semantic_dependency_skip_logged = True
+        logger.warning("{}", _format_semantic_dependency_skip(skip_context))
+
     def update_embeddings_for_files(self, file_paths: list[Path]) -> None:
         """Update semantic embeddings for code entities in specific files."""
         if not has_semantic_dependencies():
+            self._warn_semantic_dependencies_missing("incremental embedding update")
             return
 
         try:
@@ -600,9 +629,7 @@ class GraphUpdater:
         logger.info("--- Starting Pass 4: Generating semantic embeddings ---")
 
         if not has_semantic_dependencies():
-            logger.info(
-                "Semantic search dependencies not available, skipping embedding generation"
-            )
+            self._warn_semantic_dependencies_missing("embedding generation")
             return
 
         try:

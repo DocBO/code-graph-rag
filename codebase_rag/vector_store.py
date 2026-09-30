@@ -12,7 +12,7 @@ import httpx
 from loguru import logger
 
 from .config import settings
-from .utils.dependencies import has_qdrant_client
+from .utils.dependencies import has_qdrant_client, has_remote_qdrant
 
 
 class VectorStoreError(Exception):
@@ -75,7 +75,12 @@ def _unpack_embedding_row(
 
 
 def _use_remote_qdrant() -> bool:
-    return bool(settings.QDRANT_HOST and settings.QDRANT_PORT)
+    """Whether a Qdrant server (rather than local disk) is configured.
+
+    Delegates to the shared check so the branch selection here and the semantic
+    dependency gate can never disagree about which Qdrant paths are usable.
+    """
+    return has_remote_qdrant()
 
 
 def get_collection_name(repo_path: str | Path | None = None) -> str:

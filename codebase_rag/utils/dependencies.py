@@ -20,18 +20,53 @@ def has_qdrant_client() -> bool:
     return _check_dependency("qdrant_client")
 
 
+def has_remote_qdrant() -> bool:
+    """Check if a Qdrant server is configured for the HTTP API path.
+
+    The Python client is not the only way to reach Qdrant: when it is absent but
+    a host and port are configured, ``vector_store`` talks to the same server
+    over its HTTP API. A configured server therefore satisfies the Qdrant
+    requirement even though the ``semantic`` extra is missing.
+    """
+    from ..config import settings
+
+    return bool(settings.QDRANT_HOST and settings.QDRANT_PORT)
+
+
+def missing_semantic_dependencies() -> list[str]:
+    """List every unmet requirement for semantic search, with its remediation.
+
+    Returns:
+        An empty list when semantic search can run. Otherwise one
+        operator-facing sentence per missing piece, so a skipped embedding pass
+        can name the cause instead of reporting a single catch-all reason.
+    """
+    from ..config import settings
+
+    missing: list[str] = []
+    if not settings.EMBED_ENDPOINT:
+        missing.append("EMBED_ENDPOINT is not set")
+    if not settings.EMBED_MODEL:
+        missing.append("EMBED_MODEL is not set")
+    if not has_qdrant_client() and not has_remote_qdrant():
+        missing.append(
+            "no Qdrant backend: qdrant_client is not importable by this "
+            "interpreter and QDRANT_HOST/QDRANT_PORT are not both set "
+            "(run `uv sync --extra semantic`, or point QDRANT_HOST and "
+            "QDRANT_PORT at a Qdrant server)"
+        )
+    return missing
+
+
 def has_semantic_dependencies() -> bool:
     """Check if semantic search dependencies are available.
 
     Returns:
         True if an external embedder is configured (EMBED_ENDPOINT and
-        EMBED_MODEL set) and the Qdrant client is available.
+        EMBED_MODEL set) and a Qdrant backend is reachable, either through the
+        Python client or through a configured Qdrant server's HTTP API.
     """
-    from ..config import settings
-
-    if not (settings.EMBED_ENDPOINT and settings.EMBED_MODEL):
-        return False
-    return has_qdrant_client()
+    return not missing_semantic_dependencies()
 
 
 def check_dependencies(required_modules: list[str]) -> bool:

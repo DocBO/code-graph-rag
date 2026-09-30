@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import pytest
+
+from codebase_rag.config import settings
 from codebase_rag.utils.dependencies import (
     _check_dependency,
     _dependency_cache,
@@ -7,6 +10,7 @@ from codebase_rag.utils.dependencies import (
     get_missing_dependencies,
     has_qdrant_client,
     has_semantic_dependencies,
+    missing_semantic_dependencies,
 )
 
 
@@ -39,6 +43,84 @@ class TestConvenienceFunctions:
     def test_has_semantic_dependencies_returns_bool(self) -> None:
         result = has_semantic_dependencies()
         assert isinstance(result, bool)
+
+
+class TestMissingSemanticDependencies:
+    """The reasons behind a skipped semantic pass must name the missing piece."""
+
+    def test_names_each_unset_embed_setting(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(settings, "EMBED_ENDPOINT", None)
+        monkeypatch.setattr(settings, "EMBED_MODEL", None)
+        monkeypatch.setattr(
+            "codebase_rag.utils.dependencies.has_qdrant_client", lambda: True
+        )
+
+        assert missing_semantic_dependencies() == [
+            "EMBED_ENDPOINT is not set",
+            "EMBED_MODEL is not set",
+        ]
+        assert has_semantic_dependencies() is False
+
+    def test_names_missing_qdrant_backend_with_remediation(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(settings, "EMBED_ENDPOINT", "https://embed.test/v1")
+        monkeypatch.setattr(settings, "EMBED_MODEL", "test-embedding-model")
+        monkeypatch.setattr(
+            "codebase_rag.utils.dependencies.has_qdrant_client", lambda: False
+        )
+        monkeypatch.setattr(settings, "QDRANT_HOST", None)
+        monkeypatch.setattr(settings, "QDRANT_PORT", None)
+
+        reasons = missing_semantic_dependencies()
+
+        assert len(reasons) == 1
+        assert "qdrant_client" in reasons[0]
+        assert "uv sync --extra semantic" in reasons[0]
+        assert has_semantic_dependencies() is False
+
+    def test_configured_qdrant_server_satisfies_the_gate_without_the_client(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The HTTP API path needs no ``semantic`` extra, so it must not skip."""
+        monkeypatch.setattr(settings, "EMBED_ENDPOINT", "https://embed.test/v1")
+        monkeypatch.setattr(settings, "EMBED_MODEL", "test-embedding-model")
+        monkeypatch.setattr(
+            "codebase_rag.utils.dependencies.has_qdrant_client", lambda: False
+        )
+        monkeypatch.setattr(settings, "QDRANT_HOST", "qdrant.test")
+        monkeypatch.setattr(settings, "QDRANT_PORT", 6333)
+
+        assert missing_semantic_dependencies() == []
+        assert has_semantic_dependencies() is True
+
+    def test_partial_qdrant_configuration_does_not_satisfy_the_gate(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(settings, "EMBED_ENDPOINT", "https://embed.test/v1")
+        monkeypatch.setattr(settings, "EMBED_MODEL", "test-embedding-model")
+        monkeypatch.setattr(
+            "codebase_rag.utils.dependencies.has_qdrant_client", lambda: False
+        )
+        monkeypatch.setattr(settings, "QDRANT_HOST", "qdrant.test")
+        monkeypatch.setattr(settings, "QDRANT_PORT", None)
+
+        assert len(missing_semantic_dependencies()) == 1
+        assert has_semantic_dependencies() is False
+
+    def test_empty_when_every_requirement_is_met(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(settings, "EMBED_ENDPOINT", "https://embed.test/v1")
+        monkeypatch.setattr(settings, "EMBED_MODEL", "test-embedding-model")
+        monkeypatch.setattr(
+            "codebase_rag.utils.dependencies.has_qdrant_client", lambda: True
+        )
+
+        assert missing_semantic_dependencies() == []
+        assert has_semantic_dependencies() is True
 
 
 class TestCheckDependencies:

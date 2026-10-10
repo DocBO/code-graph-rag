@@ -5,6 +5,7 @@ from typing import cast
 
 import anyio
 import pytest
+from loguru import logger
 from mcp.client.session import ClientSession
 from pydantic_ai.messages import ModelRequest, ToolCallPart, ToolReturnPart
 
@@ -631,6 +632,114 @@ def test_extract_retrieval_metadata_collects_usage_and_sources() -> None:
             "filename": "src/auth.py",
             "start_line": 30,
             "end_line": 41,
+        },
+    ]
+
+
+def test_extract_retrieval_metadata_drops_failed_code_lookups() -> None:
+    """A failed get_code_snippet must not be published as a citation.
+
+    Regression test for docs/BUG_MCP_SOURCE_CITATIONS.md: the failure paths in
+    CodeRetriever.find_code_snippet return found=False with file_path="".
+    """
+    request = ModelRequest(
+        parts=[
+            ToolCallPart(tool_name="get_code_snippet", args="missing"),
+            ToolReturnPart(
+                tool_name="get_code_snippet",
+                tool_call_id="1",
+                content=CodeSnippet(
+                    qualified_name="pkg.sales.SubSalesOrder.initialize",
+                    source_code="",
+                    file_path="",
+                    line_start=0,
+                    line_end=0,
+                    found=False,
+                    error_message="Graph entry is missing location data.",
+                ),
+            ),
+            ToolCallPart(tool_name="get_code_snippet", args="present"),
+            ToolReturnPart(
+                tool_name="get_code_snippet",
+                tool_call_id="2",
+                content=CodeSnippet(
+                    qualified_name="pkg.auth.login",
+                    source_code="def login(): ...",
+                    file_path="src/auth.py",
+                    line_start=12,
+                    line_end=30,
+                ),
+            ),
+        ]
+    )
+
+    # The real loguru logger is used so the test proves the failure is reported,
+    # not just that the citation disappears silently.
+    warnings: list[str] = []
+    sink_id = logger.add(lambda message: warnings.append(str(message)), level="WARNING")
+    try:
+        result = _extract_retrieval_metadata([request])
+    finally:
+        logger.remove(sink_id)
+
+    assert result["sources"] == [
+        {
+            "qualified_name": "pkg.auth.login",
+            "filename": "src/auth.py",
+            "start_line": 12,
+            "end_line": 30,
+        }
+    ]
+    assert len(warnings) == 1
+    assert "pkg.sales.SubSalesOrder.initialize" in warnings[0]
+    assert "Graph entry is missing location data." in warnings[0]
+
+
+def test_extract_retrieval_metadata_uses_graph_line_numbers() -> None:
+    """Graph citations carry start/end lines when the query returned them."""
+    request = ModelRequest(
+        parts=[
+            ToolCallPart(tool_name="query_codebase_knowledge_graph", args="x"),
+            ToolReturnPart(
+                tool_name="query_codebase_knowledge_graph",
+                tool_call_id="1",
+                content=GraphData(
+                    query_used="MATCH (n) RETURN n",
+                    summary="ok",
+                    results=[
+                        {
+                            "qualified_name": "pkg.auth.login",
+                            "path": "src/auth.py",
+                            "start_line": 10,
+                            "end_line": 22,
+                        },
+                        {
+                            "qualified_name": "pkg.docs",
+                            "path": "docs/guide.md",
+                            "start_line": "0",
+                            "end_line": "7",
+                        },
+                        {"qualified_name": "pkg.auth.login", "path": "src/auth.py"},
+                    ],
+                ),
+            ),
+        ]
+    )
+
+    result = _extract_retrieval_metadata([request])
+
+    assert result["sources"] == [
+        {
+            "qualified_name": "pkg.auth.login",
+            "filename": "src/auth.py",
+            "start_line": 10,
+            "end_line": 22,
+        },
+        {
+            "qualified_name": "pkg.docs",
+            "filename": "docs/guide.md",
+            "start_line": None,
+            "end_line": 7,
         },
     ]
 

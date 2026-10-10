@@ -35,6 +35,17 @@ _SEMANTIC_TOOLS = {"semantic_search_by_intent", "semantic_search_functions"}
 _AGENT_DEPTH_MODES = {"shallow", "normal", "deep"}
 
 
+def _line_number(value: Any) -> int | None:
+    """Coerce a graph value into a positive line number, or None when unusable."""
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        return None
+    return number if number > 0 else None
+
+
 def _extract_retrieval_metadata(messages: list[Any]) -> dict[str, Any]:
     """Collect tool usage flags and structured source citations from agent run messages."""
 
@@ -68,11 +79,21 @@ def _extract_retrieval_metadata(messages: list[Any]) -> dict[str, Any]:
                             {
                                 "qualified_name": str(qualified_name),
                                 "filename": str(filename),
-                                "start_line": None,
-                                "end_line": None,
+                                "start_line": _line_number(row.get("start_line")),
+                                "end_line": _line_number(row.get("end_line")),
                             }
                         )
                 elif isinstance(content, CodeSnippet):
+                    # A failed lookup (found=False) carries an empty file_path and
+                    # lines 0,0. Publishing it as a citation claims grounding that
+                    # does not exist, so it is dropped and logged instead.
+                    if not content.found or not content.file_path:
+                        logger.warning(
+                            "[MCP] discarded unresolved citation for "
+                            f"{content.qualified_name!r}: "
+                            f"{content.error_message or 'no file path in snippet'}"
+                        )
+                        continue
                     key = (content.qualified_name, content.file_path)
                     if key in seen:
                         continue
@@ -81,8 +102,8 @@ def _extract_retrieval_metadata(messages: list[Any]) -> dict[str, Any]:
                         {
                             "qualified_name": content.qualified_name,
                             "filename": content.file_path,
-                            "start_line": content.line_start,
-                            "end_line": content.line_end,
+                            "start_line": _line_number(content.line_start),
+                            "end_line": _line_number(content.line_end),
                         }
                     )
 

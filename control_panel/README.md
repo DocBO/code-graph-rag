@@ -121,6 +121,7 @@ sees the result.
 | `MCP_PORT`       | `8765`             | MCP server port               |
 | `MCP_PATH`       | `/mcp`             | MCP HTTP path                 |
 | `FRONTEND_PORT`  | `3003`             | Vite dev server port          |
+| `GRAPHCODE_PANEL_DATA_DIR` | `backend/data` | Directory holding `repos.json` |
 
 ## Notes
 
@@ -129,7 +130,8 @@ sees the result.
   `uv` must be on `PATH`.
 - The backend itself is started with `uv run` too; `fastapi` and
   `uvicorn[standard]` live in the root `pyproject.toml`.
-- `repos.json` (registered repo list) is stored in `backend/data/`.
+- `repos.json` (registered repo list) is stored in `backend/data/`, or wherever
+  `GRAPHCODE_PANEL_DATA_DIR` points.
 - The dashboard runs with `uvicorn --reload`, which re-creates the backend on
   code changes. On startup the backend reconciles orphaned watcher/MCP
   processes left by the previous instance: stale duplicates are stopped and
@@ -137,3 +139,13 @@ sees the result.
   a watcher/MCP when one already runs for that repo adopts the existing process
   instead of spawning a second writer (which would cause Memgraph
   transaction conflicts).
+- MCP adoption is decided by an `initialize` probe against `MCP_HOST:MCP_PORT`,
+  not by process names: a server is adopted only when it answers as
+  `graph-code-mcp`, and a *different* MCP server on that port is refused with
+  HTTP 409 instead of being taken over. An adopted server is stopped by pid
+  (never by process group), so a manually started server that shares a group
+  with your shell cannot drag the shell down. See
+  `docs/BUG_MCP_PROCESS_ADOPTION.md`.
+- An adopted MCP server's stdout/stderr cannot be captured: the pipe belongs to
+  whichever process started it. The panel records adoption, refusal and
+  duplicate-cleanup decisions as lines in `mcp.logs` instead.

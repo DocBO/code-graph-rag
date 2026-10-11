@@ -21,6 +21,7 @@ import json
 import os
 import signal
 import socket
+import sys
 import time
 import urllib.request
 from collections.abc import Iterator
@@ -112,7 +113,18 @@ def _has_port(args: list[str], port: int) -> bool:
     return False
 
 
-def is_mcp_server_invocation(args: list[str], port: int) -> bool:
+def _option_value(args: list[str], option: str, default: str) -> str:
+    for index, arg in enumerate(args):
+        if arg == option and index + 1 < len(args):
+            return args[index + 1]
+        if arg.startswith(f"{option}="):
+            return arg.split("=", 1)[1]
+    return default
+
+
+def is_mcp_server_invocation(
+    args: list[str], port: int, host: str | None = None, path: str | None = None
+) -> bool:
     """True only for a real ``… -m codebase_rag.main mcp … --port <port>`` call.
 
     Every predicate is an exact argument comparison. Matching substrings against
@@ -131,6 +143,12 @@ def is_mcp_server_invocation(args: list[str], port: int) -> bool:
         return False
     # Restrict to servers serving *our* port so an unrelated stdio server, or one
     # for another port, is never reported or signalled.
+    if _option_value(args, "--transport", "stdio").lower() != "http":
+        return False
+    if host is not None and _option_value(args, "--host", "127.0.0.1") != host:
+        return False
+    if path is not None and _option_value(args, "--path", "/mcp") != path:
+        return False
     return _has_port(args, port)
 
 
@@ -147,9 +165,22 @@ def is_watcher_invocation(args: list[str], repo_path: str) -> bool:
         return False
     if Path(args[0]).name in _WRAPPER_ARGV0:
         return False
-    if not any(Path(arg).name == WATCHER_SCRIPT_NAME for arg in args):
+    interpreter = 0
+    if Path(args[0]).name == "uv":
+        if len(args) < 4 or args[1:3] != ["run", "python"]:
+            return False
+        interpreter = 2
+    elif not Path(args[0]).name.startswith(("python", "pypy")):
         return False
-    return repo_path in args
+    script_index = interpreter + 1
+    while script_index < len(args) and args[script_index] in ("-u", "-B", "-O", "-OO"):
+        script_index += 1
+    if (
+        script_index >= len(args)
+        or Path(args[script_index]).name != WATCHER_SCRIPT_NAME
+    ):
+        return False
+    return script_index + 1 < len(args) and args[script_index + 1] == repo_path
 
 
 def _parent_pid(pid: int) -> int:
@@ -197,7 +228,12 @@ def _candidate_argv(excluded: set[int]) -> Iterator[tuple[int, list[str]]]:
         yield pid, read_cmdline(pid)
 
 
-def list_mcp_server_pids(port: int, exclude: set[int] | None = None) -> list[int]:
+def list_mcp_server_pids(
+    port: int,
+    exclude: set[int] | None = None,
+    host: str | None = None,
+    path: str | None = None,
+) -> list[int]:
     """Pids of verified MCP server invocations serving ``port``, oldest first.
 
     ``/proc`` is scanned directly rather than through ``pgrep -f``: pgrep matches
@@ -208,7 +244,7 @@ def list_mcp_server_pids(port: int, exclude: set[int] | None = None) -> list[int
     return sorted(
         pid
         for pid, args in _candidate_argv(excluded)
-        if is_mcp_server_invocation(args, port)
+        if is_mcp_server_invocation(args, port, host, path)
     )
 
 
@@ -257,6 +293,53 @@ def endpoint_open(host: str, port: int, timeout: float = 1.0) -> bool:
             return True
     except OSError:
         return False
+
+
+def listener_pids(host: str, port: int) -> list[int]:
+    """Resolve the answering TCP listener to local socket-owning processes."""
+    try:
+        with socket.create_connection((host, port), timeout=1.0) as connection:
+            peer = connection.getpeername()
+            address = peer[0]
+            with socket.socket(connection.family, socket.SOCK_STREAM) as local_check:
+                local_check.bind((address, 0, *peer[2:]))
+    except OSError:
+        return []
+    inodes: set[str] = set()
+    for table, family in (("tcp", socket.AF_INET), ("tcp6", socket.AF_INET6)):
+        try:
+            rows = Path(f"/proc/net/{table}").read_text().splitlines()[1:]
+        except OSError:
+            continue
+        for row in rows:
+            fields = row.split()
+            raw_address, raw_port = fields[1].split(":")
+            if fields[3] != "0A" or int(raw_port, 16) != port:
+                continue
+            packed = b"".join(
+                int(raw_address[offset : offset + 8], 16).to_bytes(4, sys.byteorder)
+                for offset in range(0, len(raw_address), 8)
+            )
+            bound_address = socket.inet_ntop(family, packed)
+            if bound_address in (address, "0.0.0.0", "::", f"::ffff:{address}"):
+                inodes.add(f"socket:[{fields[9]}]")
+    owners: list[int] = []
+    if not inodes:
+        return owners
+    for pid, _args in _candidate_argv(set()):
+        try:
+            descriptors = Path(f"/proc/{pid}/fd").iterdir()
+            for descriptor in descriptors:
+                try:
+                    target = os.readlink(descriptor)
+                except OSError:
+                    continue
+                if target in inodes:
+                    owners.append(pid)
+                    break
+        except OSError:
+            continue
+    return sorted(owners)
 
 
 def pid_alive(pid: int) -> bool:

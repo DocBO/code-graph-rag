@@ -134,18 +134,23 @@ sees the result.
   `GRAPHCODE_PANEL_DATA_DIR` points.
 - The dashboard runs with `uvicorn --reload`, which re-creates the backend on
   code changes. On startup the backend reconciles orphaned watcher/MCP
-  processes left by the previous instance: stale duplicates are stopped and
-  watchers are re-spawned so update-progress tracking stays accurate. Starting
+  processes left by the previous instance: watcher interpreter processes are
+  stopped by PID and re-spawned so update-progress tracking stays accurate. Starting
   a watcher/MCP when one already runs for that repo adopts the existing process
   instead of spawning a second writer (which would cause Memgraph
   transaction conflicts).
-- MCP adoption is decided by an `initialize` probe against `MCP_HOST:MCP_PORT`,
-  not by process names: a server is adopted only when it answers as
-  `graph-code-mcp`, and a *different* MCP server on that port is refused with
-  HTTP 409 instead of being taken over. An adopted server is stopped by pid
-  (never by process group), so a manually started server that shares a group
-  with your shell cannot drag the shell down. See
+- MCP running state is decided by an `initialize` probe against
+  `MCP_HOST:MCP_PORT`: the endpoint must answer as `graph-code-mcp`.
+  An unbound HTTP process matching the configured host/path may be adopted as
+  `starting`, with the same `MCP_START_TIMEOUT` grace as a spawned server.
+  Other services and ambiguous startup candidates are refused with HTTP 409.
+- Verified MCP listeners are attributed to their local socket-owning PID through
+  Linux `/proc`; command-line candidates are never killed as presumed MCP
+  duplicates. If ownership is unavailable or ambiguous, stop returns HTTP 409
+  and preserves the running state instead of claiming the endpoint was stopped.
+  External watchers and MCP servers are stopped by PID, never by process group,
+  so unrelated members of a manually started process's group are left alone. See
   `docs/BUG_MCP_PROCESS_ADOPTION.md`.
 - An adopted MCP server's stdout/stderr cannot be captured: the pipe belongs to
   whichever process started it. The panel records adoption, refusal and
-  duplicate-cleanup decisions as lines in `mcp.logs` instead.
+  watcher duplicate-cleanup decisions as lines in their respective logs instead.

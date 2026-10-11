@@ -257,6 +257,7 @@ class McpHandle:
         self.logs: deque[str] = deque(maxlen=LOG_LIMIT)
         self._reader: threading.Thread | None = None
         self._monitor: threading.Thread | None = None
+        self._adoption_token: object | None = None
         self.active_requests = 0
         self._active_request_ids: set[int] = set()
         self.last_request_at: float | None = None
@@ -412,11 +413,13 @@ def _stop_group(proc: subprocess.Popen[str]) -> None:
 def _live_watcher_pids(repo_path: str) -> list[int]:
     """Pids of *verified* realtime_updater.py runs for repo_path.
 
-    Matching is by exact argument, not substring: a shell or sandbox wrapper that
-    merely mentions the script and the path is not a watcher — and the callers of
-    this function SIGINT the group of everything it returns.
+    Only interpreter children are returned; uv wrappers exit with their children.
     """
-    return panel_processes.list_watcher_pids(repo_path)
+    return [
+        pid
+        for pid in panel_processes.list_watcher_pids(repo_path)
+        if (args := panel_processes.read_cmdline(pid)) and Path(args[0]).name != "uv"
+    ]
 
 
 def _mcp_url() -> str:
@@ -440,7 +443,7 @@ def _live_mcp_pids() -> list[int]:
     Only real ``-m codebase_rag.main mcp … --port MCP_PORT`` invocations count;
     shells, wrappers and the panel's own process tree are excluded.
     """
-    return panel_processes.list_mcp_server_pids(MCP_PORT)
+    return panel_processes.list_mcp_server_pids(MCP_PORT, host=MCP_HOST, path=MCP_PATH)
 
 
 def _live_mcp_servers() -> list[panel_processes.McpServerProcesses]:
@@ -462,20 +465,26 @@ def _start_adopted_mcp_monitor(handle: McpHandle) -> threading.Thread:
     does not open a new MCP session on every tick.
     """
 
+    token = handle._adoption_token
+    adopted_pid = handle.adopted_pid
+    deadline = time.monotonic() + MCP_START_TIMEOUT
+
     def _watch() -> None:
         misses = 0
-        while True:
+        while handle._adoption_token is token:
             if handle.state not in ("starting", "running"):
-                if handle.state == "stopping":
-                    handle.state = "stopped"
                 return
             if handle.state == "starting":
                 probe = _probe_mcp_server(timeout=1.0)
                 alive = bool(probe["alive"] and probe["server_name"] == MCP_SERVER_NAME)
             else:
                 alive = panel_processes.endpoint_open(MCP_HOST, MCP_PORT, timeout=1.0)
-                if alive and handle.adopted_pid is not None:
-                    alive = panel_processes.pid_alive(handle.adopted_pid)
+            process_alive = adopted_pid is None or panel_processes.pid_alive(
+                adopted_pid
+            )
+            alive = alive and process_alive
+            if handle._adoption_token is not token:
+                return
             if alive:
                 misses = 0
                 if handle.state == "starting":
@@ -485,16 +494,17 @@ def _start_adopted_mcp_monitor(handle: McpHandle) -> threading.Thread:
                     )
             else:
                 misses += 1
-                if misses >= 3:
+                starting = handle.state == "starting"
+                expired = starting and time.monotonic() >= deadline
+                if not process_alive or expired or (not starting and misses >= 3):
                     handle.adopted_pid = None
-                    if handle.state == "stopping":
-                        handle.state = "stopped"
-                    else:
-                        handle.state = "error"
-                        handle.last_error = "adopted MCP server is no longer reachable"
-                        handle.logs.append(
-                            f"[mcp] adopted server stopped answering {_mcp_url()}"
-                        )
+                    handle.state = "error"
+                    handle.last_error = (
+                        f"startup timed out after {int(MCP_START_TIMEOUT)}s"
+                        if expired
+                        else "adopted MCP server is no longer reachable"
+                    )
+                    handle.logs.append(f"[mcp] {handle.last_error}: {_mcp_url()}")
                     return
             time.sleep(2)
 
@@ -514,7 +524,9 @@ def _adopt_mcp_server(handle: McpHandle, reason: str = "existing") -> bool:
       bound the port yet is adopted as "starting" and promoted by the monitor
       once it answers, so a restart cannot spawn a second server.
 
-    Raises HTTPException when a *different* MCP server owns the port.
+    Socket ownership attributes a verified listener to a local pid. Ambiguous
+    ownership stays unmanaged, and other command-line candidates are never killed.
+    Raises HTTPException when another service owns the endpoint.
     """
     probe = _probe_mcp_server()
     if probe["alive"] and probe["server_name"] != MCP_SERVER_NAME:
@@ -530,6 +542,10 @@ def _adopt_mcp_server(handle: McpHandle, reason: str = "existing") -> bool:
 
     verified = bool(probe["alive"] and probe["server_name"] == MCP_SERVER_NAME)
     servers = _live_mcp_servers()
+    if probe["port_open"] and not verified:
+        raise HTTPException(
+            409, f"Endpoint {_mcp_url()} is open but not a verified MCP server"
+        )
     if not verified and not servers:
         handle.logs.append(
             f"[mcp] nothing to adopt on {_mcp_url()} "
@@ -537,20 +553,23 @@ def _adopt_mcp_server(handle: McpHandle, reason: str = "existing") -> bool:
         )
         return False
 
-    keep = next(
-        (s for s in servers if handle.adopted_pid in s.pids),
-        servers[-1] if servers else None,
-    )
-    stopped = 0
-    for server in servers:
-        if keep is not None and server.pgid == keep.pgid:
-            continue
-        _stop_adopted_mcp_pid(server.pid)
-        stopped += 1
+    if verified:
+        candidates = set(panel_processes.list_mcp_server_pids(MCP_PORT))
+        owners = candidates.intersection(
+            panel_processes.listener_pids(MCP_HOST, MCP_PORT)
+        )
+        adopted_pid = next(iter(owners)) if len(owners) == 1 else None
+    else:
+        if len(servers) != 1:
+            raise HTTPException(
+                409, "Multiple unbound MCP candidates; ownership is ambiguous"
+            )
+        adopted_pid = servers[0].pid
 
+    handle._adoption_token = object()
     handle.proc = None
     handle.last_error = None
-    handle.adopted_pid = keep.pid if keep is not None else None
+    handle.adopted_pid = adopted_pid
     handle.state = "running" if verified else "starting"
     handle.active_requests = 0
     handle._active_request_ids.clear()
@@ -561,12 +580,11 @@ def _adopt_mcp_server(handle: McpHandle, reason: str = "existing") -> bool:
     handle.logs.append(
         f"[mcp] adopted {reason} MCP server (pid={resolved}, "
         f"server={probe['server_name'] or 'unverified'} {probe['version'] or '?'}, "
-        f"probe={'answered' if verified else 'not answering yet'}, "
-        f"stopped {stopped} stale duplicate(s))"
+        f"probe={'answered' if verified else 'not answering yet'})"
     )
     if handle.adopted_pid is None:
         handle.logs.append(
-            "[mcp] adopted server has no locally resolvable pid; it will be "
+            "[mcp] adopted server has no locally resolvable pid with unique ownership; it will be "
             "reported but never signalled (not started by this panel)"
         )
     handle._monitor = _start_adopted_mcp_monitor(handle)
@@ -621,17 +639,8 @@ def _stop_group_id(pgid: int) -> None:
 
 
 def _stop_adopted_pid(pid: int) -> None:
-    """SIGINT an adopted watcher's process group, then SIGKILL if needed.
-
-    Watchers are always spawned by the panel with their own session, so their
-    group is ours to signal. Adopted *MCP* servers are not: use
-    ``_stop_adopted_mcp_pid`` for those (see docs/BUG_MCP_PROCESS_ADOPTION.md).
-    """
-    try:
-        pgid = os.getpgid(pid)
-    except (ProcessLookupError, PermissionError):
-        return
-    _stop_group_id(pgid)
+    """Stop one external watcher without signalling its unowned process group."""
+    panel_processes.stop_pid(pid)
 
 
 def _start_monitor(
@@ -681,28 +690,20 @@ def _start_monitor(
 
 
 def _start_adopted_monitor(
-    pgid: int,
+    pid: int,
     handle: WatcherHandle | McpHandle,
     on_exit: Any = None,
 ) -> threading.Thread:
-    """Spawn a daemon thread that watches an adopted (non-child) process group.
-
-    Adopted processes have no Popen handle, so liveness is polled via the
-    process group. An unexpected exit moves the handle to "error" (with a
-    readable message); a stop issued through the control panel leaves it
-    "stopped".
-    """
+    """Monitor the adopted watcher, not unrelated members of its process group."""
 
     def _watch() -> None:
-        while True:
+        while handle.adopted_pid == pid:
             if handle.state != "running":
                 handle.adopted_pid = None
                 if handle.state == "stopping":
                     handle.state = "stopped"
                 return
-            try:
-                os.killpg(pgid, 0)
-            except (ProcessLookupError, PermissionError):
+            if not panel_processes.pid_alive(pid):
                 handle.adopted_pid = None
                 if handle.state == "stopping":
                     handle.state = "stopped"
@@ -822,11 +823,11 @@ class RepoManager:
         ``_adopt_mcp_server`` can prove it is ours (see that function).
         """
         for key, cfg in self._repos.items():
-            groups = _group_leaders(_live_watcher_pids(cfg.path))
-            if not groups:
+            pids = _live_watcher_pids(cfg.path)
+            if not pids:
                 continue
-            for group in groups:
-                _stop_group_id(group)
+            for pid in pids:
+                _stop_adopted_pid(pid)
             try:
                 handle = self.start_watcher(key)
                 handle.logs.append(
@@ -997,21 +998,21 @@ class RepoManager:
             # after uvicorn --reload restarted the module) must not be started
             # a second time — that produces concurrent writers and Memgraph
             # transaction conflicts. Stop stale duplicates and adopt the newest.
-            groups = _group_leaders(_live_watcher_pids(cfg.path))
-            if groups:
-                for stale in groups[:-1]:
-                    _stop_group_id(stale)
+            pids = _live_watcher_pids(cfg.path)
+            if pids:
+                for stale in pids[:-1]:
+                    _stop_adopted_pid(stale)
                 handle.proc = None
                 handle.update_in_progress = False
                 handle.last_error = None
-                handle.adopted_pid = groups[-1]
+                handle.adopted_pid = pids[-1]
                 handle.state = "running"
                 self._watchers[key] = handle
                 handle.logs.append(
-                    f"[watcher] adopted existing watcher (pgid={groups[-1]}, "
-                    f"stopped {len(groups) - 1} stale duplicate(s))"
+                    f"[watcher] adopted existing watcher (pid={pids[-1]}, "
+                    f"stopped {len(pids) - 1} stale duplicate(s))"
                 )
-                handle._monitor = _start_adopted_monitor(groups[-1], handle, _on_exit)
+                handle._monitor = _start_adopted_monitor(pids[-1], handle, _on_exit)
                 return handle
             self._watchers[key] = handle
 
@@ -1183,11 +1184,13 @@ class RepoManager:
 
         mcp = self.mcp
         if mcp.proc is not None and mcp.proc.poll() is None:
+            mcp._adoption_token = None
             mcp.state = "stopping"
             _stop_group(mcp.proc)
             mcp.state = "stopped"
             stopped["mcp"] = True
         elif mcp.adopted_pid is not None:
+            mcp._adoption_token = None
             _stop_adopted_mcp_pid(mcp.adopted_pid)
             mcp.logs.append(f"[mcp] stopped adopted MCP server (pid={mcp.adopted_pid})")
             mcp.adopted_pid = None
@@ -1442,6 +1445,8 @@ def mcp_start(req: McpStartRequest) -> dict[str, Any]:
     if repo_path is None:
         raise HTTPException(400, "No repos registered and no repo_path provided")
 
+    mcp._adoption_token = None
+    mcp.adopted_pid = None
     cmd = [
         "uv",
         "run",
@@ -1499,6 +1504,12 @@ def mcp_stop() -> dict[str, Any]:
     if mcp.proc is None and mcp.adopted_pid is None:
         if mcp.state not in ("starting", "running"):
             return mcp.status()
+        mcp.logs.append(
+            "[mcp] adopted MCP server is not stoppable: no locally resolvable pid "
+            "(it was not started by this panel)"
+        )
+        raise HTTPException(409, "MCP server is unmanaged: no locally resolvable pid")
+    mcp._adoption_token = None
     mcp.state = "stopping"
     if mcp.proc is not None:
         mcp.logs.append("[mcp] stopping spawned MCP server")
@@ -1507,12 +1518,6 @@ def mcp_stop() -> dict[str, Any]:
         mcp.logs.append(f"[mcp] stopping adopted MCP server (pid={mcp.adopted_pid})")
         _stop_adopted_mcp_pid(mcp.adopted_pid)
         mcp.adopted_pid = None
-        mcp.state = "stopped"
-    else:
-        mcp.logs.append(
-            "[mcp] adopted MCP server is not stoppable: no locally resolvable pid "
-            "(it was not started by this panel)"
-        )
         mcp.state = "stopped"
     mcp.active_requests = 0
     mcp._active_request_ids.clear()

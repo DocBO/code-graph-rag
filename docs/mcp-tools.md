@@ -38,6 +38,7 @@ All tool responses include `repo_path` so clients can always see which repositor
 - `repo_path`, `question`, `search_depth`, `response` (string: synthesized answer), `sources[]`, `retrieval`
 - `retrieval` includes: `used_graph`, `used_semantic_search`, `index_status` (`fresh`/`stale`/`no_metadata`)
 - Each `sources[]` entry is `qualified_name`, `filename`, `start_line`, `end_line`. Only *resolved* citations are listed: a source lookup that found nothing (`found=false`, empty filename) is dropped and logged as `[MCP] discarded unresolved citation …` instead of being reported as a citation. `start_line`/`end_line` are populated when the graph stored them and are `null` otherwise.
+- Citations are deduplicated by symbol and filename without discarding richer locations: a later successful source snippet enriches an earlier graph citation with missing lines, including replacing a partial graph range with a complete snippet range.
 
 **Example:** \"How does user authentication work?\"
 

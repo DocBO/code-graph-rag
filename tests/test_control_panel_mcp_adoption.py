@@ -9,6 +9,7 @@ server on port 8765.
 from __future__ import annotations
 
 import importlib
+import os
 import socket
 import sys
 from collections.abc import Iterator
@@ -141,14 +142,151 @@ def test_stop_does_not_pretend_to_stop_an_unresolved_server(
         assert main._adopt_mcp_server(main.manager.mcp) is True
         with TestClient(main.app) as client:
             response = client.post("/api/mcp/stop")
-        assert response.status_code == 200
-        assert response.json()["state"] == "stopped"
+        assert response.status_code == 409
+        assert "unmanaged" in response.json()["detail"]
+        assert main.manager.mcp.state == "running"
         assert any(
             "not stoppable: no locally resolvable pid" in line
             for line in main.manager.mcp.logs
         )
     finally:
         server.close()
+
+
+def test_adoption_selects_the_socket_owner_not_the_newest_candidate(
+    panel: tuple[Any, int], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Simulate candidate discovery; use real socket ownership and forbid signals."""
+    main, port = panel
+    owner = os.getpid()
+    decoy = owner + 1000000
+    monkeypatch.setattr(
+        main.panel_processes,
+        "list_mcp_server_pids",
+        lambda *args, **kwargs: [owner, decoy],
+    )
+    stopped: list[int] = []
+    monkeypatch.setattr(main, "_stop_adopted_mcp_pid", stopped.append)
+    server = FakeMcpServer(port=port)
+    try:
+        assert main._adopt_mcp_server(main.manager.mcp)
+        assert main.manager.mcp.adopted_pid == owner
+        assert stopped == []
+    finally:
+        server.close()
+
+
+def test_adopted_startup_survives_three_missed_probes(
+    panel: tuple[Any, int], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Compress the monitor clock instead of waiting for the 120-second grace."""
+    main, _port = panel
+    handle = main.McpHandle()
+    handle.state = "starting"
+    handle.adopted_pid = os.getpid()
+    handle._adoption_token = object()
+    probes = 0
+    states: list[str] = []
+
+    def probe(timeout: float) -> dict[str, Any]:
+        nonlocal probes
+        probes += 1
+        return {"alive": probes > 3, "server_name": main.MCP_SERVER_NAME}
+
+    def tick(seconds: float) -> None:
+        states.append(handle.state)
+        if handle.state == "running":
+            handle._adoption_token = None
+
+    monkeypatch.setattr(main, "_probe_mcp_server", probe)
+    monkeypatch.setattr(main.time, "sleep", tick)
+    monitor = main._start_adopted_mcp_monitor(handle)
+    monitor.join(timeout=2)
+    assert not monitor.is_alive()
+    assert states == ["starting", "starting", "starting", "running"]
+    assert handle.last_error is None
+
+
+def test_ambiguous_socket_ownership_remains_unmanaged(
+    panel: tuple[Any, int], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Simulate shared-socket owners without spawning competing real MCP servers."""
+    main, port = panel
+    monkeypatch.setattr(
+        main.panel_processes, "list_mcp_server_pids", lambda *args, **kwargs: [11, 22]
+    )
+    monkeypatch.setattr(
+        main.panel_processes, "listener_pids", lambda host, port: [11, 22]
+    )
+    server = FakeMcpServer(port=port)
+    try:
+        assert main._adopt_mcp_server(main.manager.mcp)
+        assert main.manager.mcp.adopted_pid is None
+        with TestClient(main.app) as client:
+            response = client.post("/api/mcp/stop")
+        assert response.status_code == 409
+        assert main.manager.mcp.state == "running"
+    finally:
+        server.close()
+
+
+def test_adopted_startup_uses_the_configured_timeout(
+    panel: tuple[Any, int], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Advance a deterministic clock to exercise the grace deadline."""
+    main, _port = panel
+    handle = main.McpHandle()
+    handle.state = "starting"
+    handle.adopted_pid = os.getpid()
+    handle._adoption_token = object()
+    monkeypatch.setattr(main, "MCP_START_TIMEOUT", 15)
+    clock = iter([0.0, 16.0])
+    monkeypatch.setattr(main.time, "monotonic", lambda: next(clock))
+    monkeypatch.setattr(
+        main, "_probe_mcp_server", lambda timeout: {"alive": False, "server_name": None}
+    )
+    monitor = main._start_adopted_mcp_monitor(handle)
+    monitor.join()
+    assert handle.state == "error"
+    assert handle.last_error == "startup timed out after 15s"
+
+
+def test_obsolete_adoption_monitor_cannot_update_a_replacement(
+    panel: tuple[Any, int], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Replace the handle during a probe to exercise an otherwise racy boundary."""
+    main, _port = panel
+    handle = main.McpHandle()
+    handle.state = "starting"
+    handle.adopted_pid = os.getpid()
+    handle._adoption_token = object()
+
+    def probe(timeout: float) -> dict[str, Any]:
+        handle._adoption_token = object()
+        return {"alive": True, "server_name": main.MCP_SERVER_NAME}
+
+    monkeypatch.setattr(main, "_probe_mcp_server", probe)
+    monitor = main._start_adopted_mcp_monitor(handle)
+    monitor.join(timeout=2)
+    assert not monitor.is_alive()
+    assert handle.state == "starting"
+    assert handle.logs == main.deque()
+
+
+def test_external_watcher_shutdown_uses_the_single_pid_helper(
+    panel: tuple[Any, int], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Intercept destructive signals while verifying the panel shutdown route."""
+    main, _port = panel
+    stopped: list[int] = []
+    monkeypatch.setattr(main.panel_processes, "stop_pid", stopped.append)
+
+    def reject_group(pgid: int) -> None:
+        pytest.fail("an external watcher process group was signalled")
+
+    monkeypatch.setattr(main, "_stop_group_id", reject_group)
+    main._stop_adopted_pid(12345)
+    assert stopped == [12345]
 
 
 def _free_port() -> int:

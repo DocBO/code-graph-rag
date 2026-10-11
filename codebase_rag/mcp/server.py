@@ -52,7 +52,31 @@ def _extract_retrieval_metadata(messages: list[Any]) -> dict[str, Any]:
     used_graph = False
     used_semantic_search = False
     sources: list[dict[str, Any]] = []
-    seen: set[tuple[str, str]] = set()
+    source_indices: dict[tuple[str, str], int] = {}
+
+    def record_source(
+        qualified_name: str, filename: str, start_line: Any, end_line: Any
+    ) -> None:
+        key = (qualified_name, filename)
+        location = {
+            "start_line": _line_number(start_line),
+            "end_line": _line_number(end_line),
+        }
+        if key in source_indices:
+            source = sources[source_indices[key]]
+            if all(value is not None for value in location.values()) and any(
+                source[field] is None for field in location
+            ):
+                source.update(location)
+            else:
+                for field, value in location.items():
+                    if source[field] is None:
+                        source[field] = value
+            return
+        source_indices[key] = len(sources)
+        sources.append(
+            {"qualified_name": qualified_name, "filename": filename, **location}
+        )
 
     for message in messages:
         for part in getattr(message, "parts", []):
@@ -71,17 +95,11 @@ def _extract_retrieval_metadata(messages: list[Any]) -> dict[str, Any]:
                         filename = row.get("path")
                         if not qualified_name or not filename:
                             continue
-                        key = (str(qualified_name), str(filename))
-                        if key in seen:
-                            continue
-                        seen.add(key)
-                        sources.append(
-                            {
-                                "qualified_name": str(qualified_name),
-                                "filename": str(filename),
-                                "start_line": _line_number(row.get("start_line")),
-                                "end_line": _line_number(row.get("end_line")),
-                            }
+                        record_source(
+                            str(qualified_name),
+                            str(filename),
+                            row.get("start_line"),
+                            row.get("end_line"),
                         )
                 elif isinstance(content, CodeSnippet):
                     # A failed lookup (found=False) carries an empty file_path and
@@ -94,17 +112,11 @@ def _extract_retrieval_metadata(messages: list[Any]) -> dict[str, Any]:
                             f"{content.error_message or 'no file path in snippet'}"
                         )
                         continue
-                    key = (content.qualified_name, content.file_path)
-                    if key in seen:
-                        continue
-                    seen.add(key)
-                    sources.append(
-                        {
-                            "qualified_name": content.qualified_name,
-                            "filename": content.file_path,
-                            "start_line": _line_number(content.line_start),
-                            "end_line": _line_number(content.line_end),
-                        }
+                    record_source(
+                        content.qualified_name,
+                        content.file_path,
+                        content.line_start,
+                        content.line_end,
                     )
 
     return {

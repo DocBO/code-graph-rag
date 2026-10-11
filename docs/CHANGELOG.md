@@ -2,6 +2,27 @@
 
 ## [Unreleased]
 
+### MCP ownership, lifecycle and citation review fixes (2026-10-11)
+
+**Status**: COMPLETED
+**Scope**: Control-panel process discovery/lifecycle, MCP source citations
+**Verification**: 52 focused tests passed with warnings treated as errors; Ruff lint and formatting clean
+
+#### Changes
+
+- Attribute verified MCP endpoints to local listener socket owners using Linux `/proc`; never kill other MCP command-line candidates as presumed duplicates. Ambiguous or unavailable ownership stays unmanaged.
+- Require HTTP transport and matching host/path for unbound startup candidates; refuse occupied, unverified endpoints and ambiguous startup candidates with HTTP 409.
+- Stop externally discovered watcher interpreter processes by PID, including reload reconciliation and duplicate cleanup; never signal their unowned process groups. Reject unrelated programs carrying watcher paths as arguments.
+- Give adopted MCP startup the configured `MCP_START_TIMEOUT` grace period, detect process exit, and retire obsolete monitors when adoption changes or a server is stopped/replaced.
+- Return HTTP 409 when an adopted MCP server has no uniquely resolvable PID instead of claiming it was stopped; preserve its running state and activity tracking.
+- Enrich duplicate source citations with later complete line ranges while preserving order and excluding failed lookups.
+
+#### Migration / Operational Notes
+
+- Restart the control-panel backend and MCP server to load the fixes; no re-ingestion or re-embedding is required.
+- MCP ownership attribution requires readable Linux process/socket metadata. Remote, inaccessible or ambiguous listeners remain visible but cannot be stopped by the panel.
+- Non-listening MCP candidates are no longer automatically terminated. Conflicting candidates must be resolved by their operator.
+
 ### 🐍 Embed Python methods in Qdrant (2026-09-09)
 
 **Status**: COMPLETED

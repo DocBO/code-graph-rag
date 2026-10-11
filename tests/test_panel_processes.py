@@ -69,11 +69,29 @@ def test_real_server_invocation_is_recognised() -> None:
     assert panel_processes.is_mcp_server_invocation(_REAL_SERVER_ARGV, 8765)
     # uv resolves `python` to an interpreter, so the child is matched too.
     assert panel_processes.is_mcp_server_invocation(
-        ["/repo/.venv/bin/python", "-m", "codebase_rag.main", "mcp", "--port", "8765"],
+        [
+            "/repo/.venv/bin/python",
+            "-m",
+            "codebase_rag.main",
+            "mcp",
+            "--transport",
+            "http",
+            "--port",
+            "8765",
+        ],
         8765,
     )
     assert panel_processes.is_mcp_server_invocation(
-        ["uv", "run", "python", "-m", "codebase_rag.main", "mcp", "--port=8765"],
+        [
+            "uv",
+            "run",
+            "python",
+            "-m",
+            "codebase_rag.main",
+            "mcp",
+            "--transport=http",
+            "--port=8765",
+        ],
         8765,
     )
 
@@ -86,6 +104,16 @@ def test_real_server_invocation_is_recognised() -> None:
 def test_wrappers_are_never_the_server(argv: list[str]) -> None:
     """A wrapper whose command line contains the module is not a server."""
     assert not panel_processes.is_mcp_server_invocation(argv, 8765)
+
+
+@pytest.mark.parametrize(
+    ("option", "value"),
+    [("--transport", "stdio"), ("--host", "127.0.0.2"), ("--path", "/other")],
+)
+def test_mcp_candidates_must_match_the_http_endpoint(option: str, value: str) -> None:
+    args = _REAL_SERVER_ARGV.copy()
+    args[args.index(option) + 1] = value
+    assert not panel_processes.is_mcp_server_invocation(args, 8765, "127.0.0.1", "/mcp")
 
 
 def test_the_removed_substring_predicate_is_what_matched_the_caller() -> None:
@@ -213,6 +241,9 @@ def test_watcher_near_misses_are_rejected() -> None:
         ["bash", "-c", f"cd {_WATCHER_REPO} && grep realtime_updater.py"],
         _WATCHER_REPO,
     )
+    assert not panel_processes.is_watcher_invocation(
+        ["python", "other.py", "realtime_updater.py", _WATCHER_REPO], _WATCHER_REPO
+    )
 
 
 def test_list_watcher_pids_only_returns_real_watchers() -> None:
@@ -284,6 +315,15 @@ def test_probe_reports_nothing_listening() -> None:
     assert result["alive"] is False
     assert result["server_name"] is None
     assert result["error"]
+
+
+def test_listener_pids_resolves_the_process_owning_the_socket() -> None:
+    server = FakeMcpServer()
+    try:
+        assert panel_processes.listener_pids("127.0.0.1", server.port) == [os.getpid()]
+    finally:
+        server.close()
+    assert panel_processes.listener_pids("127.0.0.1", server.port) == []
 
 
 _GROUP_SCRIPT = """

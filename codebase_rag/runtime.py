@@ -18,6 +18,7 @@ from .tools.enhanced_semantic_search import create_enhanced_semantic_search_tool
 from .tools.file_editor import FileEditor, create_file_editor_tool
 from .tools.file_reader import FileReader, create_file_reader_tool
 from .tools.file_writer import FileWriter, create_file_writer_tool
+from .tools.git_reader import GitReader, create_git_read_tool
 from .tools.semantic_search import (
     create_get_source_tool,
     create_semantic_search_tool,
@@ -68,6 +69,9 @@ def initialize_services_and_agent(
     )
     directory_lister = DirectoryLister(project_root=repo_path)
     document_analyzer = DocumentAnalyzer(project_root=repo_path)
+    git_reader = GitReader(
+        project_root=repo_path, timeout=settings.SHELL_COMMAND_TIMEOUT
+    )
 
     query_tool = create_query_tool(ingestor, cypher_generator, console)
     code_tool = create_code_retrieval_tool(code_retriever)
@@ -79,6 +83,7 @@ def initialize_services_and_agent(
     get_source_tool = create_get_source_tool(repo_path=repo_path)
 
     if read_only:
+        git_read_tool = create_git_read_tool(git_reader)
         tools = [
             query_tool,
             code_tool,
@@ -88,6 +93,7 @@ def initialize_services_and_agent(
             semantic_search_tool,
             enhanced_semantic_search_tool,
             get_source_tool,
+            git_read_tool,
         ]
         rag_agent = create_rag_orchestrator(
             tools=tools, system_prompt=RAG_READ_ONLY_SYSTEM_PROMPT

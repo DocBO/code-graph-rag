@@ -813,7 +813,7 @@ class GraphCodeMCPServer:
             types.Tool(
                 name="query_codebase",
                 title="Query Codebase (RAG)",
-                description="Query the codebase using the standard agent search and answer flow, with tunable search depth.",
+                description="Query the codebase using the standard agent search and answer flow, with tunable search depth. Read-only git history, blame and diffs are available to the agent.",
                 inputSchema=_build_tool_schema("query_codebase"),
                 outputSchema={
                     "type": "object",

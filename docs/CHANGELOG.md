@@ -2,6 +2,24 @@
 
 ## [Unreleased]
 
+### Read-only git answers for MCP and dashboard (2026-10-11)
+
+**Status**: COMPLETED
+**Scope**: `codebase_rag/tools/git_reader.py` (new), read-only agent wiring (`codebase_rag/runtime.py`), read-only prompt (`codebase_rag/prompts.py`), MCP tool description, `docs/mcp-tools.md`
+**Verification**: Static error check clean on changed modules; read-only toolset test count updated (9 tools)
+
+#### Changes
+
+- Add `run_git_readonly` tool to the read-only agent used by `query_codebase` (MCP) and `/api/query` (dashboard, which reuses the same context), so history, blame, and diff questions can be answered.
+- Allow only read-only git subcommands (`blame`, `cat-file`, `describe`, `diff`, `log`, `ls-files`, `ls-tree`, `rev-list`, `rev-parse`, `show`, `show-ref`, `shortlog`, `status`).
+- Reject options that write files or run external programs (`--output`, `--no-index`, `--contents`, `--ext-diff`, `--textconv`, and abbreviations of them); force `--no-ext-diff --no-textconv` on diff/log/show; set `GIT_PAGER=cat` and `GIT_OPTIONAL_LOCKS=0`.
+- Cap git output at 20000 characters and apply the configured `SHELL_COMMAND_TIMEOUT`.
+- Full (non-read-only) agent keeps the existing `execute_shell_command` tool unchanged.
+
+#### Migration / Operational Notes
+
+- Restart the control-panel backend and MCP server to load the new tool; no re-ingestion is required.
+
 ### MCP ownership, lifecycle and citation review fixes (2026-10-11)
 
 **Status**: COMPLETED

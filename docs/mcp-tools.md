@@ -24,7 +24,7 @@ All tool responses include `repo_path` so clients can always see which repositor
 
 ### 2. `query_codebase`
 **Title:** Query Codebase (RAG)  
-**Description:** Query the codebase using the standard agent search and answer flow. The agent can combine graph queries, source retrieval, and semantic tools as needed.
+**Description:** Query the codebase using the standard agent search and answer flow. The agent can combine graph queries, source retrieval, and semantic tools as needed. History questions (commits, blame, diffs) are answered via the read-only `run_git_readonly` tool (allowed subcommands: `blame`, `cat-file`, `describe`, `diff`, `log`, `ls-files`, `ls-tree`, `rev-list`, `rev-parse`, `show`, `show-ref`, `shortlog`, `status`; write operations are rejected).
 
 **Parameters:**
 - `question` (string, required): Question about codebase functionality/implementation.

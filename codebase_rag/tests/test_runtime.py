@@ -81,7 +81,7 @@ def test_read_only_agent_excludes_mutation_tools(
     assert "create_shell_command_tool" not in called
 
     tools = mock_factories.captured["tools"]  # type: ignore[attr-defined]
-    assert len(tools) == 8
+    assert len(tools) == 9
     assert "READ-ONLY" in str(
         mock_factories.captured["system_prompt"]  # type: ignore[attr-defined]
     )

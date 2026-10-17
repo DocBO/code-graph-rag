@@ -21,7 +21,7 @@ schema, language support, CLI workflows, and implementation details.
 
 - A React control panel for managing multiple local repositories.
 - Per-repository real-time watchers with optional initial full scans.
-- A unified HTTP MCP server; every tool accepts an optional `repo_path`.
+- A unified HTTP MCP server; every repository-scoped tool requires an explicit `repo_path`.
 - Memgraph for code-structure graphs and Qdrant for semantic code embeddings.
 - Dashboard access to codebase queries, semantic retrieval, embedding refreshes,
   process status, and live log tails.
@@ -69,8 +69,9 @@ default; configure `QDRANT_HOST` when using a remote Qdrant service.
 4. Start the unified MCP server from the dashboard.
 5. Configure your MCP client with `http://127.0.0.1:8765/mcp`.
 
-The MCP server serves every registered repository. Pass `repo_path` to target a
-specific one; otherwise the selected default repository is used.
+The MCP server has no default repository: every repository-scoped tool call must
+pass an explicit `repo_path`. A call that omits it fails with an error naming
+`repo_path` as the cause instead of silently querying another repository.
 
 ### Available MCP Tools
 

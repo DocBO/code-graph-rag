@@ -105,9 +105,9 @@ def test_start_endpoint_adopts_a_verified_server(panel: tuple[Any, int]) -> None
         # starts leaks a socketpair and an event loop, which pytest later reports
         # as an unraisable ResourceWarning (and fails an unrelated test under -W error).
         with TestClient(main.app) as client:
-            response = client.post(
-                "/api/mcp/start", json={"repo_path": "/tmp/does-not-matter"}
-            )
+            # The MCP server is not bound to a repository, so starting it needs
+            # no repo_path at all.
+            response = client.post("/api/mcp/start", json={})
     finally:
         server.close()
 
@@ -130,6 +130,37 @@ def test_start_endpoint_refuses_a_foreign_server(panel: tuple[Any, int]) -> None
     assert response.status_code == 409
     assert "someone-elses-mcp" in response.json()["detail"]
     assert main.manager.mcp.proc is None
+
+
+def test_mcp_status_no_longer_reports_a_default_repository(
+    panel: tuple[Any, int],
+) -> None:
+    main, _port = panel
+    with TestClient(main.app) as client:
+        body = client.get("/api/status").json()
+
+    assert "repo_path" not in body["mcp"]
+
+
+@pytest.mark.parametrize(
+    ("path", "payload"),
+    [
+        ("/api/query", {"question": "Where is auth handled?"}),
+        ("/api/query", {"question": "Where is auth handled?", "repo_path": ""}),
+        ("/api/query", {"question": "Where is auth handled?", "repo_path": "   "}),
+        ("/api/semantic", {"search_phrase": "login handler"}),
+        ("/api/semantic", {"search_phrase": "login handler", "repo_path": ""}),
+    ],
+)
+def test_repo_scoped_api_rejects_a_missing_repository_with_the_cause(
+    panel: tuple[Any, int], path: str, payload: dict[str, str]
+) -> None:
+    main, _port = panel
+    with TestClient(main.app) as client:
+        response = client.post(path, json=payload)
+
+    assert response.status_code == 422
+    assert "repo_path is required" in response.json()["detail"]
 
 
 def test_stop_does_not_pretend_to_stop_an_unresolved_server(

@@ -255,12 +255,12 @@ function RepoCard({
 
 function QueryPanel({
   repos,
-  defaultRepo,
+  initialRepo,
 }: {
   repos: RepoInfo[]
-  defaultRepo: string
+  initialRepo: string
 }) {
-  const [repoPath, setRepoPath] = useState(defaultRepo)
+  const [repoPath, setRepoPath] = useState(initialRepo)
   const [question, setQuestion] = useState('')
   const [searchDepth, setSearchDepth] = useState<QueryDepth>('normal')
   const [resultDepth, setResultDepth] = useState<QueryDepth>('normal')
@@ -410,12 +410,12 @@ function QueryPanel({
 
 function SemanticPanel({
   repos,
-  defaultRepo,
+  initialRepo,
 }: {
   repos: RepoInfo[]
-  defaultRepo: string
+  initialRepo: string
 }) {
-  const [repoPath, setRepoPath] = useState(defaultRepo)
+  const [repoPath, setRepoPath] = useState(initialRepo)
   const [phrase, setPhrase] = useState('')
   const [topN, setTopN] = useState('5')
   const [result, setResult] = useState<SemanticResult | null>(null)
@@ -633,16 +633,14 @@ function AddRepoForm({ onAdd }: { onAdd: () => void }) {  const [path, setPath] 
 
 function McpPanel({
   status,
-  repos,
   logs,
   onStart,
   onStop,
   onLogs,
 }: {
   status: StatusResponse['mcp']
-  repos: RepoInfo[]
   logs: string[] | null
-  onStart: (repoPath: string | null) => void
+  onStart: () => void
   onStop: () => void
   onLogs: () => void
 }) {
@@ -652,7 +650,6 @@ function McpPanel({
     status.state === 'running' ||
     status.state === 'starting' ||
     status.state === 'stopping'
-  const [selected, setSelected] = useState<string>('')
   const logRef = useRef<HTMLPreElement>(null)
   const stickToBottom = useRef(true)
 
@@ -669,9 +666,6 @@ function McpPanel({
     if (!el) return
     stickToBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 40
   }
-
-  const defaultRepo = repos[0]?.path ?? ''
-  const effective = selected || defaultRepo
 
   return (
     <section className="card mcp-card" data-tone={tone}>
@@ -698,10 +692,6 @@ function McpPanel({
             <span className="meta-k">LAST MCP WORK</span>
             {formatAgo(status.last_activity_at ?? null)}
           </span>
-          <span className="meta-item">
-            <span className="meta-k">DEFAULT REPO</span>
-            <span className="meta-ellipsis">{status.repo_path ?? '—'}</span>
-          </span>
         </div>
       </header>
 
@@ -717,27 +707,9 @@ function McpPanel({
             Stop MCP
           </button>
         ) : (
-          <>
-            <select
-              className="input mcp-select"
-              value={effective}
-              onChange={(e) => setSelected(e.target.value)}
-            >
-              {repos.length === 0 && <option value="">no repos registered</option>}
-              {repos.map((r) => (
-                <option key={r.path} value={r.path}>
-                  {r.name} — {r.path}
-                </option>
-              ))}
-            </select>
-            <button
-              className="btn btn-start"
-              onClick={() => onStart(effective)}
-              disabled={repos.length === 0}
-            >
-              Start MCP
-            </button>
-          </>
+          <button className="btn btn-start" onClick={onStart}>
+            Start MCP
+          </button>
         )}
         <button className="btn btn-ghost" onClick={onLogs}>
           {logs ? 'Hide MCP logs' : 'MCP logs'}
@@ -1161,21 +1133,19 @@ export default function App() {
             last_response_at: null,
             last_activity_at: null,
             pid: null,
-            repo_path: null,
             url: 'http://127.0.0.1:8765/mcp',
             last_error: null,
             log_count: 0,
           }}
-          repos={repos}
           logs={mcpLogsVisible ? (logs.__mcp__ ?? null) : null}
-          onStart={(p) => withLoading('mcp', () => mcpStart(p || undefined))}
+          onStart={() => withLoading('mcp', () => mcpStart())}
           onStop={() => withLoading('mcp', () => mcpStop())}
           onLogs={toggleMcpLogs}
         />
 
-        <QueryPanel repos={repos} defaultRepo={repos[0]?.path ?? ''} />
+        <QueryPanel repos={repos} initialRepo={repos[0]?.path ?? ''} />
 
-        <SemanticPanel repos={repos} defaultRepo={repos[0]?.path ?? ''} />
+        <SemanticPanel repos={repos} initialRepo={repos[0]?.path ?? ''} />
 
         <AddRepoForm onAdd={refresh} />
 

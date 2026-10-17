@@ -43,7 +43,7 @@ The result is an MCP endpoint that is reported healthy but is not listening at a
 - `ss -ltn | grep 8765` → **not listening**; pid 980521 is the caller's own shell
 - Moments later the handle becomes `state: error`, `last_error: "adopted process exited unexpectedly"`
 
-**Expected:** the panel spawns `uv run python -m codebase_rag.main mcp --repo-path … --port 8765`
+**Expected:** the panel spawns `uv run python -m codebase_rag.main mcp --transport http --port 8765`
 (the `mcp_start` spawn branch) and 8765 begins listening.
 
 A second POST from a second such shell reproduced it identically with `pgid=980792`. A POST from a

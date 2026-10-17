@@ -48,9 +48,10 @@ install them).
    (`--no-update`); *Start + full scan* performs an initial ingestion first.
 3. **Stop / Remove**: *Stop watcher* SIGINTs the process group and cleans up.
    *Remove* deregisters the repo (and stops its watcher).
-4. **Unified MCP server**: pick the default repo and start the single HTTP MCP
-   server (`:8765/mcp`). Tools take `repo_path` per call, so all repos are
-   reachable through this one server.
+4. **Unified MCP server**: start the single HTTP MCP server (`:8765/mcp`). It is
+   not bound to any repository; every repository-scoped tool call supplies its
+   own `repo_path`, and a call without one fails with an error naming
+   `repo_path`.
 
 The dashboard polls `/api/status` every 2.5 s and shows:
 - which repos have an **active watcher** (green lamp)
@@ -82,8 +83,12 @@ the agent's markdown answer is rendered in place with a **Copy** button.
 | GET    | `/api/mcp/logs`                   | MCP server log tail                  |
 | POST   | `/api/query`                      | Run `query_codebase` RAG on a repo   |
 
-`POST /api/query` accepts `repo_path`, `question`, and optional
-`search_depth` (`shallow`/`normal`/`deep`, default `normal`).
+`POST /api/query` requires `repo_path` and `question`, plus optional
+`search_depth` (`shallow`/`normal`/`deep`, default `normal`). `POST /api/semantic`
+requires `repo_path` and `search_phrase`. Omitting or blanking `repo_path` is
+rejected with HTTP 422 and the message `repo_path is required: …`.
+
+`POST /api/mcp/start` takes no body: the MCP server has no default repository.
 
 `GET /api/status` now includes MCP activity telemetry under `mcp`:
 - `activity`: `idle`, `busy`, `stalled`, or process-state values (`starting`, `stopping`, `error`, `stopped`)

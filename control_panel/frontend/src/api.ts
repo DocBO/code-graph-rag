@@ -98,10 +98,12 @@ export function repoLogs(path: string, limit = 250): Promise<string[]> {
   return req(`/repos/${encodeRepoPath(path)}/logs?limit=${limit}`)
 }
 
-export function mcpStart(repoPath?: string) {
+export function mcpStart() {
+  // The MCP server has no default repository: it is started without one and
+  // every repository-scoped tool call supplies its own repo_path.
   return req('/mcp/start', {
     method: 'POST',
-    body: JSON.stringify({ repo_path: repoPath ?? null }),
+    body: JSON.stringify({}),
   })
 }
 

@@ -22,7 +22,7 @@ Examples:
     uv run python start_mcp_with_watcher.py ~/my-project --debounce 30
 """
 
-import argparse 
+import argparse
 import os
 import shlex
 import socket
@@ -224,14 +224,14 @@ Examples:
                 env=child_env,
             )
             print(f"✓ Real-time updater started (PID: {updater_process.pid})")
-            
+
             # Start a thread to capture and display updater logs
             def _capture_updater_logs():
                 """Capture logs from the background updater process."""
                 if updater_process.stdout:
                     for line in updater_process.stdout:
                         print(f"  [updater] {line.rstrip()}")
-            
+
             import threading
             log_thread = threading.Thread(target=_capture_updater_logs, daemon=True)
             log_thread.start()
@@ -241,14 +241,13 @@ Examples:
 
         print()
 
-    # Build MCP server command
+    # Build MCP server command. The MCP server has no repository of its own:
+    # every repository-scoped tool call names its repo_path explicitly.
     mcp_cmd = [
         sys.executable,
         "-m",
         "codebase_rag.main",
         "mcp",
-        "--repo-path",
-        str(repo_path),
     ]
 
     if args.batch_size:

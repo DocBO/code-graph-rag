@@ -62,11 +62,13 @@ The MCP schema for `query_codebase` accepts:
 ```json
 {
   "question": "How is authentication implemented?",
-  "repo_path": "/optional/repository/path"
+  "repo_path": "/abs/repository/path"
 }
 ```
 
-`question` is required; `repo_path` is optional.
+Both `question` and `repo_path` are required. The MCP server has no default
+repository, so a call without `repo_path` fails with an error that names the
+missing field.
 
 The dispatcher performs:
 

@@ -2,7 +2,7 @@
 
 The Graph-Code MCP (Model Context Protocol) server exposes the following tools for interacting with the codebase knowledge graph and RAG system. These tools can be used over stdio or HTTP (SSE) transports.
 
-All tool responses include `repo_path` so clients can always see which repository context produced the result.
+Every repository-scoped tool response includes `repo_path` so clients can always see which repository produced the result. The MCP server has no default repository: repository-scoped tools require `repo_path`, and a call without it fails with an error naming `repo_path` as the cause.
 
 ## Available Tools
 
@@ -13,7 +13,7 @@ All tool responses include `repo_path` so clients can always see which repositor
 **Parameters:**
 - `search_phrase` (string, required): Semantic phrase to search for.
 - `top_n` (integer, optional): Max number of matches (default: 5, min: 1, max: 50).
-- `repo_path` (string, optional): Repository path override. Defaults to the server's configured repository.
+- `repo_path` (string, required): Repository path (absolute) to search.
 
 **Returns:**
 - `repo_path`, `search_phrase`, `top_n`, `matches[]`
@@ -32,7 +32,7 @@ All tool responses include `repo_path` so clients can always see which repositor
   - `shallow`: fast, minimal retrieval for quick answers.
   - `normal`: balanced retrieval for most use cases.
   - `deep`: broader multi-step retrieval across semantic, graph, and source evidence.
-- `repo_path` (string, optional): Repository path override. Defaults to the server's configured repository.
+- `repo_path` (string, required): Repository path (absolute) to search.
 
 **Returns:**
 - `repo_path`, `question`, `search_depth`, `response` (string: synthesized answer), `sources[]`, `retrieval`
@@ -47,19 +47,19 @@ Compatibility: `query_codegraph` is supported as an alias with the same request/
 
 ### 3. `get_status`
 **Title:** Get Server Status  
-**Description:** Current configuration (repo, Memgraph, providers).  
+**Description:** Current server configuration (providers, Memgraph, batch size). Not repository-scoped.
 
 **Parameters:** None  
 
 **Returns:**
-- `repo_path`, `batch_size`, `memgraph`, `orchestrator`, `cypher`
+- `batch_size`, `memgraph`, `orchestrator`, `cypher`
 
 ### 4. `ingest_status`
 **Title:** Ingest Status  
 **Description:** Last ingest time and changes since then.  
 
 **Parameters:**
-- `repo_path` (string, optional): Repo to check.
+- `repo_path` (string, required): Repository path (absolute) to check.
 
 **Returns:**
 - `repo_path`, `last_ingest`, `changes` (added/deleted/modified/total), `metadata_path`
@@ -126,7 +126,7 @@ The script automatically:
 - `--debounce`: Real-time updater debounce delay in seconds (default: `20`)
 
 For manual startup of individual components:
-- **MCP Server only:** `uv run python -m codebase_rag.main mcp --repo-path /path/to/repo`
+- **MCP Server only:** `uv run python -m codebase_rag.main mcp` (no repository argument — each repository-scoped tool call names its `repo_path`)
 - **Real-time updater only:** `uv run python realtime_updater.py /path/to/repo`
 
 See [`codebase_rag/mcp/server.py`](codebase_rag/mcp/server.py) for implementation details.

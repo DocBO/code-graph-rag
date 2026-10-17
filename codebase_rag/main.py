@@ -205,11 +205,15 @@ def extract_edit_summary(response_text: str) -> str:
     return "\n".join(unique_mods)
 
 
-def _setup_common_initialization(repo_path: str) -> Path:
-    """Common setup logic for both main and optimize functions."""
-    # Logger initialization
+def _setup_logging() -> None:
+    """Configure loguru to log through stdout for CLI and MCP runs."""
     logger.remove()
     logger.add(sys.stdout, format="{time:YYYY-MM-DD HH:mm:ss.SSS} | {message}")
+
+
+def _setup_common_initialization(repo_path: str) -> Path:
+    """Common setup logic for both main and optimize functions."""
+    _setup_logging()
 
     # Temporary directory cleanup
     project_root = Path(repo_path).expanduser().resolve()
@@ -226,7 +230,7 @@ def _setup_common_initialization(repo_path: str) -> Path:
 
 
 def _create_configuration_table(
-    repo_path: str,
+    repo_path: str | None,
     title: str = "Graph-Code Initializing...",
     language: str | None = None,
 ) -> Table:
@@ -273,7 +277,8 @@ def _create_configuration_table(
         "Enabled" if confirm_edits_globally else "Disabled (YOLO Mode)"
     )
     table.add_row("Edit Confirmation", confirmation_status)
-    table.add_row("Target Repository", repo_path)
+    if repo_path is not None:
+        table.add_row("Target Repository", repo_path)
 
     return table
 
@@ -1136,11 +1141,6 @@ def optimize(
 
 @app.command()
 def mcp(
-    repo_path: str | None = typer.Option(
-        None,
-        "--repo-path",
-        help="Path to the repository exposed through the MCP server",
-    ),
     batch_size: int | None = typer.Option(
         None,
         "--batch-size",
@@ -1180,15 +1180,18 @@ def mcp(
         help="HTTP path for MCP requests when using HTTP transport",
     ),
 ) -> None:
-    """Start Graph-Code as an MCP server for external agents."""
+    """Start Graph-Code as an MCP server for external agents.
 
-    target_repo_path = repo_path or settings.TARGET_REPO_PATH
+    The server has no default repository: every repository-scoped tool call must
+    name the repository it targets via ``repo_path``.
+    """
+
     _update_model_settings(orchestrator, cypher)
-    project_root = _setup_common_initialization(target_repo_path)
+    _setup_logging()
     effective_batch_size = settings.resolve_batch_size(batch_size)
 
     table = _create_configuration_table(
-        str(project_root), title="Graph-Code MCP Server Configuration"
+        None, title="Graph-Code MCP Server Configuration"
     )
     console.print(table)
     transport_lower = transport.lower()
@@ -1202,7 +1205,7 @@ def mcp(
             "[bold green]Starting MCP server over stdio (Ctrl+C to stop)...[/bold green]"
         )
         try:
-            asyncio.run(serve_mcp_stdio(str(project_root), effective_batch_size))
+            asyncio.run(serve_mcp_stdio(effective_batch_size))
         except KeyboardInterrupt:
             console.print("\n[bold red]MCP server stopped by user.[/bold red]")
     elif transport_lower == "http":
@@ -1215,7 +1218,6 @@ def mcp(
         try:
             asyncio.run(
                 serve_mcp_http(
-                    str(project_root),
                     effective_batch_size,
                     host=host,
                     port=port,

@@ -77,7 +77,6 @@ class StubContext:
 
     async def get_status(self) -> dict[str, object]:
         return {
-            "repo_path": "/workspace",
             "batch_size": 1000,
             "memgraph": {"host": "localhost", "port": 7687},
             "orchestrator": {"provider": "ollama", "model": "llama3.2"},
@@ -201,7 +200,34 @@ def test_mcp_server_lists_tools_and_invokes_them() -> None:
                 query_codebase_tool = next(
                     tool for tool in tools_result.tools if tool.name == "query_codebase"
                 )
-                assert query_codebase_tool.inputSchema["required"] == ["question"]
+                for repo_tool_name in (
+                    "graph_query",
+                    "optimize_code",
+                    "ingest_status",
+                    "query_codebase",
+                    "query_codegraph",
+                    "quick_semantic_retrieval",
+                ):
+                    repo_tool = next(
+                        tool
+                        for tool in tools_result.tools
+                        if tool.name == repo_tool_name
+                    )
+                    assert "repo_path" in repo_tool.inputSchema["required"], (
+                        repo_tool_name
+                    )
+
+                status_tool = next(
+                    tool for tool in tools_result.tools if tool.name == "get_status"
+                )
+                assert not status_tool.inputSchema.get("required")
+                assert "repo_path" not in status_tool.outputSchema["properties"]
+                assert "repo_path" not in status_tool.outputSchema["required"]
+
+                assert query_codebase_tool.inputSchema["required"] == [
+                    "repo_path",
+                    "question",
+                ]
                 assert set(query_codebase_tool.inputSchema["properties"]) == {
                     "question",
                     "search_depth",
@@ -221,7 +247,10 @@ def test_mcp_server_lists_tools_and_invokes_them() -> None:
                     for tool in tools_result.tools
                     if tool.name == "quick_semantic_retrieval"
                 )
-                assert quick_semantic_tool.inputSchema["required"] == ["search_phrase"]
+                assert quick_semantic_tool.inputSchema["required"] == [
+                    "repo_path",
+                    "search_phrase",
+                ]
                 assert set(quick_semantic_tool.inputSchema["properties"]) == {
                     "search_phrase",
                     "top_n",
@@ -229,16 +258,20 @@ def test_mcp_server_lists_tools_and_invokes_them() -> None:
                 }
 
                 query_result = await session.call_tool(
-                    "graph_query", {"question": "List modules"}
+                    "graph_query",
+                    {"question": "List modules", "repo_path": "/workspace"},
                 )
                 assert query_result.structuredContent["cypher"] == "MATCH (n) RETURN n"
 
                 optimize_result = await session.call_tool(
-                    "optimize_code", {"language": "python"}
+                    "optimize_code",
+                    {"language": "python", "repo_path": "/workspace"},
                 )
                 assert optimize_result.structuredContent["language"] == "python"
 
-                ingest_status_result = await session.call_tool("ingest_status", {})
+                ingest_status_result = await session.call_tool(
+                    "ingest_status", {"repo_path": "/workspace"}
+                )
                 assert (
                     ingest_status_result.structuredContent["last_ingest"]
                     == "2025-11-15T12:00:00Z"
@@ -246,7 +279,10 @@ def test_mcp_server_lists_tools_and_invokes_them() -> None:
 
                 codebase_result = await session.call_tool(
                     "query_codebase",
-                    {"question": "How is the frontend rendered?"},
+                    {
+                        "question": "How is the frontend rendered?",
+                        "repo_path": "/workspace",
+                    },
                 )
                 assert not codebase_result.isError
                 assert codebase_result.structuredContent == {
@@ -266,6 +302,7 @@ def test_mcp_server_lists_tools_and_invokes_them() -> None:
                     "query_codebase",
                     {
                         "question": "How is the frontend rendered?",
+                        "repo_path": "/workspace",
                         "strategy": "semantic-seed-strategy",
                     },
                 )
@@ -275,6 +312,7 @@ def test_mcp_server_lists_tools_and_invokes_them() -> None:
                     "query_codebase",
                     {
                         "question": "Trace startup flow",
+                        "repo_path": "/workspace",
                         "search_depth": "deep",
                     },
                 )
@@ -285,6 +323,7 @@ def test_mcp_server_lists_tools_and_invokes_them() -> None:
                     "query_codegraph",
                     {
                         "question": "Trace startup flow",
+                        "repo_path": "/workspace",
                         "search_depth": "shallow",
                     },
                 )
@@ -296,6 +335,7 @@ def test_mcp_server_lists_tools_and_invokes_them() -> None:
                     {
                         "search_phrase": "login handler",
                         "top_n": 3,
+                        "repo_path": "/workspace",
                     },
                 )
                 assert not quick_semantic_result.isError
@@ -311,6 +351,17 @@ def test_mcp_server_lists_tools_and_invokes_them() -> None:
                     quick_semantic_result.structuredContent["matches"][0]["filename"]
                     == "src/auth.py"
                 )
+
+                missing_repo_result = await session.call_tool(
+                    "query_codebase",
+                    {"question": "How is the frontend rendered?"},
+                )
+                assert missing_repo_result.isError
+                assert "repo_path" in missing_repo_result.content[0].text
+
+                get_status_result = await session.call_tool("get_status", {})
+                assert not get_status_result.isError
+                assert "repo_path" not in get_status_result.structuredContent
 
                 quick_semantic_with_repo_result = await session.call_tool(
                     "quick_semantic_retrieval",
@@ -336,7 +387,7 @@ def test_mcp_server_lists_tools_and_invokes_them() -> None:
         "query_codebase",
         {
             "question": "How is the frontend rendered?",
-            "repo_path": None,
+            "repo_path": "/workspace",
             "search_depth": "normal",
         },
     ) in context.calls
@@ -344,13 +395,17 @@ def test_mcp_server_lists_tools_and_invokes_them() -> None:
         "query_codebase",
         {
             "question": "Trace startup flow",
-            "repo_path": None,
+            "repo_path": "/workspace",
             "search_depth": "deep",
         },
     ) in context.calls
     assert (
         "quick_semantic_retrieval",
-        {"search_phrase": "login handler", "top_n": 3, "repo_path": None},
+        {
+            "search_phrase": "login handler",
+            "top_n": 3,
+            "repo_path": "/workspace",
+        },
     ) in context.calls
     assert (
         "quick_semantic_retrieval",
@@ -412,9 +467,11 @@ async def test_mcp_context_query_uses_standard_agent(
         fake_initialize,
     )
 
-    context = GraphCodeMCPContext(str(tmp_path), batch_size=25)
+    context = GraphCodeMCPContext(batch_size=25)
     result = await context.query_codebase(
-        "Explain the checkout frontend", search_depth="deep"
+        "Explain the checkout frontend",
+        repo_path=str(tmp_path),
+        search_depth="deep",
     )
 
     assert "SEARCH DEPTH MODE: DEEP" in str(captured["prompt"])
@@ -437,10 +494,14 @@ async def test_mcp_context_query_uses_standard_agent(
 async def test_mcp_context_query_rejects_invalid_search_depth(
     tmp_path: Path,
 ) -> None:
-    context = GraphCodeMCPContext(str(tmp_path), batch_size=25)
+    context = GraphCodeMCPContext(batch_size=25)
 
     with pytest.raises(ValueError, match="search_depth must be one of"):
-        await context.query_codebase("Explain config loading", search_depth="ultra")
+        await context.query_codebase(
+            "Explain config loading",
+            repo_path=str(tmp_path),
+            search_depth="ultra",
+        )
 
 
 @pytest.mark.asyncio
@@ -501,8 +562,10 @@ async def test_mcp_context_quick_semantic_retrieval(
         fake_execute_read_query,
     )
 
-    context = GraphCodeMCPContext(str(tmp_path), batch_size=25)
-    result = await context.quick_semantic_retrieval("login handler", top_n=3)
+    context = GraphCodeMCPContext(batch_size=25)
+    result = await context.quick_semantic_retrieval(
+        "login handler", top_n=3, repo_path=str(tmp_path)
+    )
 
     assert captured["semantic_query"] == "login handler"
     assert captured["semantic_top_k"] == 3
@@ -547,9 +610,9 @@ async def test_mcp_context_quick_semantic_retrieval_uses_qdrant_file_path(
         lambda **_: [],
     )
 
-    result = await GraphCodeMCPContext(
-        str(tmp_path), batch_size=25
-    ).quick_semantic_retrieval("embedding guide")
+    result = await GraphCodeMCPContext(batch_size=25).quick_semantic_retrieval(
+        "embedding guide", repo_path=str(tmp_path)
+    )
 
     assert result["matches"] == [
         {
@@ -562,6 +625,29 @@ async def test_mcp_context_quick_semantic_retrieval_uses_qdrant_file_path(
             "snippet": "# Embedding Guide\n\nMarkdown source content.",
         }
     ]
+
+
+@pytest.mark.asyncio
+async def test_mcp_context_rejects_requests_without_repo_path() -> None:
+    context = GraphCodeMCPContext(batch_size=25)
+
+    for repo_path in (None, "", "   "):
+        with pytest.raises(ValueError, match="repo_path is required"):
+            await context.run_query("Where is auth handled?", repo_path=repo_path)
+        with pytest.raises(ValueError, match="repo_path is required"):
+            await context.query_codebase("Where is auth handled?", repo_path=repo_path)
+        with pytest.raises(ValueError, match="repo_path is required"):
+            await context.get_ingest_status(repo_path=repo_path)
+        with pytest.raises(ValueError, match="repo_path is required"):
+            await context.quick_semantic_retrieval("login handler", repo_path=repo_path)
+
+
+@pytest.mark.asyncio
+async def test_mcp_context_get_status_has_no_default_repository() -> None:
+    status = await GraphCodeMCPContext(batch_size=25).get_status()
+
+    assert "repo_path" not in status
+    assert status["batch_size"] == 25
 
 
 def test_extract_retrieval_metadata_collects_usage_and_sources() -> None:

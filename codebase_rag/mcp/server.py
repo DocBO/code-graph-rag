@@ -191,10 +191,10 @@ def _build_tool_schema(name: str) -> dict[str, Any]:
                     },
                     "repo_path": {
                         "type": "string",
-                        "description": "Optional repository path override. Defaults to the server's configured repository.",
+                        "description": "Repository path (absolute). Required: the server has no default repository, so every repository-scoped call must name one.",
                     },
                 },
-                "required": ["question"],
+                "required": ["repo_path", "question"],
                 "additionalProperties": False,
             }
         case "optimize_code":
@@ -215,10 +215,10 @@ def _build_tool_schema(name: str) -> dict[str, Any]:
                     },
                     "repo_path": {
                         "type": "string",
-                        "description": "Optional repository path override. Defaults to the server's configured repository.",
+                        "description": "Repository path (absolute). Required: the server has no default repository, so every repository-scoped call must name one.",
                     },
                 },
-                "required": ["language"],
+                "required": ["repo_path", "language"],
                 "additionalProperties": False,
             }
         case "get_status":
@@ -233,9 +233,10 @@ def _build_tool_schema(name: str) -> dict[str, Any]:
                 "properties": {
                     "repo_path": {
                         "type": "string",
-                        "description": "Optional override for the repository path to check status for.",
+                        "description": "Repository path (absolute). Required: the server has no default repository, so every call must name one.",
                     },
                 },
+                "required": ["repo_path"],
                 "additionalProperties": False,
             }
         case "query_codebase" | "query_codegraph":
@@ -254,10 +255,10 @@ def _build_tool_schema(name: str) -> dict[str, Any]:
                     },
                     "repo_path": {
                         "type": "string",
-                        "description": "Optional repository path override. Defaults to the server's configured repository.",
+                        "description": "Repository path (absolute). Required: the server has no default repository, so every repository-scoped call must name one.",
                     },
                 },
-                "required": ["question"],
+                "required": ["repo_path", "question"],
                 "additionalProperties": False,
             }
         case "quick_semantic_retrieval":
@@ -276,10 +277,10 @@ def _build_tool_schema(name: str) -> dict[str, Any]:
                     },
                     "repo_path": {
                         "type": "string",
-                        "description": "Optional repository path override. Defaults to the server's configured repository.",
+                        "description": "Repository path (absolute). Required: the server has no default repository, so every repository-scoped call must name one.",
                     },
                 },
-                "required": ["search_phrase"],
+                "required": ["repo_path", "search_phrase"],
                 "additionalProperties": False,
             }
         case "get_watched_repos":
@@ -293,15 +294,31 @@ def _build_tool_schema(name: str) -> dict[str, Any]:
 
 
 class GraphCodeMCPContext:
-    """State holder for MCP tool implementations."""
+    """State holder for MCP tool implementations.
 
-    def __init__(self, repo_path: str, batch_size: int) -> None:
-        self.default_repo = Path(repo_path).resolve()
+    The context carries no default repository. Every repository-scoped tool call
+    must name its target, so a request without ``repo_path`` fails with an error
+    that states the cause instead of silently querying some server-wide default.
+    """
+
+    def __init__(self, batch_size: int) -> None:
         self.batch_size = batch_size
         self._cypher_generator: CypherGenerator | None = None
 
-    def _resolve_repo(self, override: str | None) -> Path:
-        return Path(override).expanduser().resolve() if override else self.default_repo
+    @staticmethod
+    def _resolve_repo(repo_path: str | None) -> Path:
+        """Resolve the repository named by a request; never fall back.
+
+        Raises:
+            ValueError: when the request does not name a repository.
+        """
+        if repo_path is None or not str(repo_path).strip():
+            raise ValueError(
+                "repo_path is required: the request must name the repository "
+                "(absolute path) it operates on; the MCP server has no default "
+                "repository."
+            )
+        return Path(repo_path).expanduser().resolve()
 
     def _ensure_cypher_generator(self) -> CypherGenerator:
         if self._cypher_generator is None:
@@ -321,25 +338,17 @@ class GraphCodeMCPContext:
         cypher_query = await generator.generate(question)
 
         def _task() -> list[dict[str, Any]]:
-            if target_repo != self.default_repo:
-                from ..services.graph_service import execute_read_query
+            from ..services.graph_service import execute_read_query
 
-                return cast(
-                    list[dict[str, Any]],
-                    execute_read_query(
-                        host=settings.MEMGRAPH_HOST,
-                        port=settings.MEMGRAPH_PORT,
-                        query=cypher_query,
-                        params={"repo_path": str(target_repo)},
-                    ),
-                )
-            with MemgraphIngestor(
-                host=settings.MEMGRAPH_HOST,
-                port=settings.MEMGRAPH_PORT,
-                batch_size=self.batch_size,
-                repo_path=self.default_repo,
-            ) as ingestor:
-                return cast(list[dict[str, Any]], ingestor.fetch_all(cypher_query))
+            return cast(
+                list[dict[str, Any]],
+                execute_read_query(
+                    host=settings.MEMGRAPH_HOST,
+                    port=settings.MEMGRAPH_PORT,
+                    query=cypher_query,
+                    params={"repo_path": str(target_repo)},
+                ),
+            )
 
         rows = await anyio.to_thread.run_sync(_task)
         return {
@@ -387,7 +396,6 @@ class GraphCodeMCPContext:
         orch = settings.active_orchestrator_config
         cypher_conf = settings.active_cypher_config
         return {
-            "repo_path": str(self.default_repo),
             "batch_size": self.batch_size,
             "memgraph": {
                 "host": settings.MEMGRAPH_HOST,
@@ -761,19 +769,17 @@ class GraphCodeMCPServer:
             types.Tool(
                 name="get_status",
                 title="Get Server Status",
-                description="Return current Graph-Code MCP configuration (repo path, providers, Memgraph host).",
+                description="Return current Graph-Code MCP configuration (providers, Memgraph host, batch size). This tool is not repository-scoped; repository-scoped tools require repo_path.",
                 inputSchema=_build_tool_schema("get_status"),
                 outputSchema={
                     "type": "object",
                     "properties": {
-                        "repo_path": {"type": "string"},
                         "batch_size": {"type": "integer"},
                         "memgraph": {"type": "object"},
                         "orchestrator": {"type": "object"},
                         "cypher": {"type": "object"},
                     },
                     "required": [
-                        "repo_path",
                         "batch_size",
                         "memgraph",
                         "orchestrator",
@@ -967,7 +973,7 @@ class GraphCodeMCPServer:
 
     async def _call_tool(
         self, tool_name: str, arguments: dict[str, Any] | None
-    ) -> tuple[list[types.TextContent], dict[str, Any]]:
+    ) -> tuple[list[types.TextContent], dict[str, Any]] | types.CallToolResult:
         args = arguments or {}
 
         try:
@@ -993,8 +999,6 @@ class GraphCodeMCPServer:
                 result = await self.context.get_ingest_status(
                     repo_path=args.get("repo_path")
                 )
-                if not result.get("repo_path"):
-                    result["repo_path"] = str(self.context.default_repo)
                 if "changes" not in result:
                     result["changes"] = {
                         "added": 0,
@@ -1004,7 +1008,7 @@ class GraphCodeMCPServer:
                     }
                 if "metadata_path" not in result:
                     result["metadata_path"] = str(
-                        Path(self.context.default_repo) / ".graphcode_ingest.json"
+                        Path(result["repo_path"]) / ".graphcode_ingest.json"
                     )
                 message = (
                     f"Last ingest: {result['last_ingest']} | changes: {result['changes']['total']}"
@@ -1045,11 +1049,18 @@ class GraphCodeMCPServer:
             raise ValueError(f"Unsupported tool: {tool_name}")
         except Exception as exc:  # pragma: no cover - error path tested separately
             logger.error("MCP tool '%s' failed: %s", tool_name, exc, exc_info=True)
-            error_content = types.TextContent(
-                type="text",
-                text=f"Error running {tool_name}: {exc}",
+            # Return a CallToolResult directly: the SDK normalises tuple returns
+            # by validating structuredContent against outputSchema, which would
+            # replace this real cause with an opaque "Output validation error".
+            return types.CallToolResult(
+                content=[
+                    types.TextContent(
+                        type="text",
+                        text=f"Error running {tool_name}: {exc}",
+                    )
+                ],
+                isError=True,
             )
-            return [error_content], {"error": str(exc)}
 
     @staticmethod
     def _format_response(
@@ -1071,20 +1082,18 @@ class GraphCodeMCPServer:
 
 
 async def serve_mcp_stdio(
-    repo_path: str,
     batch_size: int,
     *,
     server_name: str = "graph-code-mcp",
 ) -> None:
     """Start the MCP server over stdio."""
 
-    context = GraphCodeMCPContext(repo_path=repo_path, batch_size=batch_size)
+    context = GraphCodeMCPContext(batch_size=batch_size)
     server = GraphCodeMCPServer(context=context, name=server_name)
     await server.serve()
 
 
 async def serve_mcp_http(
-    repo_path: str,
     batch_size: int,
     *,
     server_name: str = "graph-code-mcp",
@@ -1095,7 +1104,7 @@ async def serve_mcp_http(
 ) -> None:
     """Start the MCP server over Streamable HTTP (SSE/JSON)."""
 
-    context = GraphCodeMCPContext(repo_path=repo_path, batch_size=batch_size)
+    context = GraphCodeMCPContext(batch_size=batch_size)
     mcp_server = GraphCodeMCPServer(context=context, name=server_name)
     session_manager = StreamableHTTPSessionManager(
         mcp_server.server, stateless=True if stateless is None else stateless

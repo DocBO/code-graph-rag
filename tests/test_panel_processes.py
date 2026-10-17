@@ -33,8 +33,6 @@ _REAL_SERVER_ARGV = [
     "-m",
     "codebase_rag.main",
     "mcp",
-    "--repo-path",
-    "/home/oliver/gitlab/re-mes-app",
     "--transport",
     "http",
     "--host",

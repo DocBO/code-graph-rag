@@ -26,7 +26,6 @@ export interface McpStatus {
   last_request_at: number | null
   last_response_at: number | null
   last_activity_at: number | null
-  repo_path: string | null
   url: string
   last_error: string | null
   log_count: number

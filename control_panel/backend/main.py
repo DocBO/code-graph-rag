@@ -26,10 +26,13 @@ from typing import Any, Literal
 
 import panel_processes
 import uvicorn
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.encoders import jsonable_encoder
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from panel_processes import MCP_SERVER_NAME
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 logger = logging.getLogger(__name__)
 
@@ -91,6 +94,45 @@ app.add_middleware(
 )
 
 
+_REPO_REQUIRED_DETAIL = (
+    "repo_path is required: every request must name the repository "
+    "(absolute path) it operates on."
+)
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_error_handler(
+    request: Request, exc: RequestValidationError
+) -> JSONResponse:
+    """Answer a missing field with a message that names the missing field.
+
+    Without this, FastAPI's default 422 body lists only ``{"type": "missing",
+    "loc": [...]}``; the dashboard's error extractor (and a human reading the
+    log) then sees "Field required" without knowing which field. A missing
+    ``repo_path`` is stated explicitly because it is the one field that must
+    never silently fall back to a default repository.
+    """
+    errors = jsonable_encoder(exc.errors())
+    missing = sorted(
+        {
+            str(error["loc"][-1])
+            for error in errors
+            if error.get("type") == "missing" and error.get("loc")
+        }
+    )
+    repo_errors = [
+        error for error in errors if error.get("loc", [])[-1:] == ["repo_path"]
+    ]
+    if "repo_path" in missing or repo_errors:
+        return JSONResponse(status_code=422, content={"detail": _REPO_REQUIRED_DETAIL})
+    if missing:
+        return JSONResponse(
+            status_code=422,
+            content={"detail": "Missing required field(s): " + ", ".join(missing)},
+        )
+    return JSONResponse(status_code=422, content={"detail": errors})
+
+
 # --------------------------------------------------------------------------
 # Models
 # --------------------------------------------------------------------------
@@ -116,8 +158,15 @@ class StartWatcherRequest(BaseModel):
     batch_size: int | None = Field(default=None, ge=1)
 
 
-class McpStartRequest(BaseModel):
-    repo_path: str | None = None
+def _require_repo_path(value: str) -> str:
+    """Reject requests that do not name a repository.
+
+    There is no default repository, so a blank path must fail exactly like a
+    missing one instead of resolving to the process working directory.
+    """
+    if not value.strip():
+        raise ValueError(_REPO_REQUIRED_DETAIL)
+    return value
 
 
 class QueryRequest(BaseModel):
@@ -125,11 +174,15 @@ class QueryRequest(BaseModel):
     question: str
     search_depth: Literal["shallow", "normal", "deep"] = "normal"
 
+    _validate_repo_path = field_validator("repo_path")(_require_repo_path)
+
 
 class SemanticSearchRequest(BaseModel):
     repo_path: str
     search_phrase: str
     top_n: int = 5
+
+    _validate_repo_path = field_validator("repo_path")(_require_repo_path)
 
 
 class ModelSelection(BaseModel):
@@ -252,7 +305,6 @@ class McpHandle:
         self.proc: subprocess.Popen[str] | None = None
         self.adopted_pid: int | None = None
         self.state = "stopped"  # stopped | starting | running | stopping | error
-        self.repo_path: str | None = None
         self.last_error: str | None = None
         self.logs: deque[str] = deque(maxlen=LOG_LIMIT)
         self._reader: threading.Thread | None = None
@@ -284,7 +336,6 @@ class McpHandle:
         return {
             "pid": self.pid(),
             "state": self.state,
-            "repo_path": self.repo_path,
             "url": f"http://{MCP_HOST}:{MCP_PORT}{MCP_PATH}",
             "last_error": self.last_error,
             "log_count": len(self.logs),
@@ -1426,7 +1477,12 @@ def shutdown_all() -> dict[str, Any]:
 
 
 @app.post("/api/mcp/start")
-def mcp_start(req: McpStartRequest) -> dict[str, Any]:
+def mcp_start() -> dict[str, Any]:
+    """Start the unified MCP server.
+
+    The server is not bound to any repository: every repository-scoped tool call
+    carries its own ``repo_path``. The dashboard therefore selects no repo here.
+    """
     mcp = manager.mcp
     if mcp.proc and mcp.proc.poll() is None:
         raise HTTPException(409, "MCP server already running")
@@ -1438,13 +1494,6 @@ def mcp_start(req: McpStartRequest) -> dict[str, Any]:
     if _adopt_mcp_server(mcp, reason="existing"):
         return mcp.status()
 
-    repo_path = req.repo_path
-    if repo_path is None:
-        repos = manager.list_repos()
-        repo_path = repos[0]["path"] if repos else None
-    if repo_path is None:
-        raise HTTPException(400, "No repos registered and no repo_path provided")
-
     mcp._adoption_token = None
     mcp.adopted_pid = None
     cmd = [
@@ -1454,8 +1503,6 @@ def mcp_start(req: McpStartRequest) -> dict[str, Any]:
         "-m",
         "codebase_rag.main",
         "mcp",
-        "--repo-path",
-        repo_path,
         "--transport",
         "http",
         "--host",
@@ -1475,7 +1522,6 @@ def mcp_start(req: McpStartRequest) -> dict[str, Any]:
 
     mcp.proc = proc
     mcp.state = "starting"
-    mcp.repo_path = repo_path
     mcp.last_error = None
     mcp.active_requests = 0
     mcp._active_request_ids.clear()
@@ -1544,13 +1590,11 @@ def run_query(req: QueryRequest) -> dict[str, Any]:
 
         from codebase_rag.mcp.server import GraphCodeMCPContext
 
-        context = GraphCodeMCPContext(
-            repo_path=str(Path(req.repo_path).expanduser().resolve()),
-            batch_size=DEFAULT_BATCH_SIZE,
-        )
+        context = GraphCodeMCPContext(batch_size=DEFAULT_BATCH_SIZE)
         result = asyncio.run(
             context.query_codebase(
                 question=req.question,
+                repo_path=str(Path(req.repo_path).expanduser().resolve()),
                 search_depth=req.search_depth,
             )
         )
@@ -1582,13 +1626,11 @@ def run_semantic(req: SemanticSearchRequest) -> dict[str, Any]:
 
         from codebase_rag.mcp.server import GraphCodeMCPContext
 
-        context = GraphCodeMCPContext(
-            repo_path=str(Path(req.repo_path).expanduser().resolve()),
-            batch_size=DEFAULT_BATCH_SIZE,
-        )
+        context = GraphCodeMCPContext(batch_size=DEFAULT_BATCH_SIZE)
         result = asyncio.run(
             context.quick_semantic_retrieval(
                 search_phrase=req.search_phrase,
+                repo_path=str(Path(req.repo_path).expanduser().resolve()),
                 top_n=req.top_n,
             )
         )
